@@ -6,6 +6,7 @@ import cors from "cors";
 import tenantsRoutes from "./routes/tenants.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import modulesRoutes from "./routes/modules.js";
+import authRoutes from "./routes/authRoutes.js";
 
 const app = express();
 app.use(cors());
@@ -15,6 +16,7 @@ app.use(express.json());
 app.use("/tenants", tenantsRoutes);
 app.use("/reports/dashboard", dashboardRoutes);
 app.use("/tenants", modulesRoutes); // modules routes nested under tenants
+app.use("/api/auth", authRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
