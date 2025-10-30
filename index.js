@@ -7,6 +7,7 @@ import tenantsRoutes from "./routes/tenants.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import modulesRoutes from "./routes/modules.js";
 import authRoutes from "./routes/authRoutes.js";
+import subscriberRoutes from "./routes/subscriber.js";
 
 const app = express();
 app.use(cors());
@@ -17,6 +18,8 @@ app.use("/tenants", tenantsRoutes);
 app.use("/reports/dashboard", dashboardRoutes);
 app.use("/tenants", modulesRoutes); // modules routes nested under tenants
 app.use("/api/auth", authRoutes);
+// Subscriber/subscription related routes (payments)
+app.use("/subscriber", subscriberRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
