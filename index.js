@@ -8,6 +8,7 @@ import dashboardRoutes from "./routes/dashboard.js";
 import modulesRoutes from "./routes/modules.js";
 import authRoutes from "./routes/authRoutes.js";
 import subscriberRoutes from "./routes/subscriber.js";
+import amcRoutes from "./routes/amc.js";
 
 const app = express();
 app.use(cors());
@@ -20,6 +21,8 @@ app.use("/tenants", modulesRoutes); // modules routes nested under tenants
 app.use("/api/auth", authRoutes);
 // Subscriber/subscription related routes (payments)
 app.use("/subscriber", subscriberRoutes);
+// AMC (Annual Maintenance Contract) related routes
+app.use("/amc", amcRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
