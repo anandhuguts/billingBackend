@@ -10,6 +10,8 @@ import authRoutes from "./routes/authRoutes.js";
 import inventory from "./routes/inventoryRoutes.js";
 import product from './routes/productRoutes.js'
 import { verifyToken } from "./middleware/verifyToken.js";
+import subscriberRoutes from "./routes/subscriber.js";
+import amcRoutes from "./routes/amc.js";
 
 const app = express();
 app.use(cors());
@@ -22,6 +24,10 @@ app.use("/tenants",verifyToken, modulesRoutes); // modules routes nested under t
 app.use("/api/auth", authRoutes);
 app.use("/api/inventory", verifyToken, inventory);
 app.use("/api/products", product);
+// Subscriber/subscription related routes (payments)
+app.use("/subscriber", subscriberRoutes);
+// AMC (Annual Maintenance Contract) related routes
+app.use("/amc", amcRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
