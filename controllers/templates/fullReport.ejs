@@ -194,7 +194,7 @@
           <tbody>
             <% (data.users || []).forEach(u => { %>
               <tr>
-                <td><%= u.username || u.name || '-' %></td>
+                <td><%= u.username || u.full_name || '-' %></td>
                 <td><%= u.role || '-' %></td>
                 <td class="small"><%= u.email || '-' %></td>
               </tr>
@@ -212,7 +212,6 @@
         <table>
           <thead>
             <tr>
-              <th style="width:28%;">Tenant / User</th>
               <th style="width:18%;">Amount</th>
               <th style="width:24%;">Date</th>
               <th style="width:20%;">Status</th>
@@ -222,7 +221,7 @@
           <tbody>
             <% payments.forEach(p => { %>
               <tr>
-                <td><%= (p.username || p.tenantName || p.tenant || p.tenant_id || '-') %></td>
+                
                 <td><%= fmtCurrency(p.amount) %></td>
                 <td><%= fmtDate(p.paid_at || p.paidAt || p.date) %></td>
                 <td><%= p.status || '-' %></td>
