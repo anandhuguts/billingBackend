@@ -123,6 +123,50 @@ export const createTenant = async (req, res) => {
     const createdTenant = tenantData[0];
     console.log("Tenant created with ID:", createdTenant.id);
 
+    // --- Auto-create an initial payment record based on selected plan ---
+    // Assumption: initial payment amount uses monthly rates per plan.
+    // If plan is 'trial' or not recognized, amount will be 0 and status set to 'trial'.
+    const planMonthlyRates = {
+      basic: 1000,
+      professional: 2500,
+      enterprise: 3500,
+    };
+
+    const tenantPlan = createdTenant.plan || "trial";
+    const amountForPlan = planMonthlyRates[tenantPlan] || 0;
+    const paymentStatus = amountForPlan > 0 ? "paid" : "trial";
+
+    let createdPayment = null;
+    try {
+      const { data: paymentData, error: paymentError } = await supabase
+        .from("payments")
+        .insert([
+          {
+            tenant_id: createdTenant.id,
+            amount: amountForPlan,
+            currency: "USD",
+            plan: tenantPlan,
+            payment_date: new Date().toISOString(),
+            status: paymentStatus,
+            transaction_id: `init_${Date.now()}`,
+          },
+        ])
+        .select();
+
+      if (paymentError) {
+        console.error(
+          "Error creating initial payment for tenant:",
+          paymentError
+        );
+      } else {
+        createdPayment =
+          paymentData && paymentData.length ? paymentData[0] : null;
+        console.log("Initial payment created for tenant:", createdPayment?.id);
+      }
+    } catch (err) {
+      console.error("Unexpected error creating initial payment:", err);
+    }
+
     // Step 2: Insert into users table with tenant_id foreign key
     // This links the user to the tenant via the tenant_id column
     const { data: userData, error: userError } = await supabase
@@ -142,21 +186,23 @@ export const createTenant = async (req, res) => {
     // If user creation fails, log the error but don't fail the whole request
     if (userError) {
       console.error("Error creating user:", userError);
-      // Return tenant data with warning
+      // Return tenant + payment data with warning about user creation
       return res.status(201).json({
         message: "Tenant created but user creation failed",
         tenant: createdTenant,
+        payment: createdPayment,
         warning: userError.message,
       });
     }
 
     console.log("User created with tenant_id:", userData[0].tenant_id);
 
-    // Both tenant and user created successfully with proper foreign key relationship
+    // Both tenant, initial payment (if created), and user created successfully
     res.status(201).json({
-      message: "Tenant and user created successfully",
+      message: "Tenant, user, and initial payment created successfully",
       tenant: createdTenant,
       user: userData[0],
+      payment: createdPayment,
     });
   } catch (err) {
     console.error("Unexpected error in createTenant:", err);
