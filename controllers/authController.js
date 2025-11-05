@@ -39,7 +39,7 @@ export const loginUser = async (req, res) => {
         tenant_id: user.tenant_id,  // 🧩 add tenant ID inside the token
       },
       process.env.JWT_SECRET,
-      { expiresIn: "2h" }
+      { expiresIn: "24h" }
     );
 
     // 4️⃣ Optionally, store token in session (if using express-session)

@@ -1,0 +1,264 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title><%= title %></title>
+  <style>
+    /* Page sizing for Puppeteer/PDF */
+    @page { size: A4; margin: 18mm 14mm; }
+    html,body { height: 100%; }
+
+    /* Base */
+    body { font-family: "Inter", Arial, Helvetica, sans-serif; font-size: 12px; color: #222; margin: 0; padding: 0; -webkit-print-color-adjust: exact; }
+    .container { width: 100%; padding: 16px; box-sizing: border-box; }
+
+    /* Header */
+    header { display:flex; align-items:center; justify-content:space-between; padding: 10px 0 18px 0; border-bottom: 1px solid #e6e6ef; }
+    .brand { display:flex; gap:12px; align-items:center; }
+    .logo { width: 120px; height: 44px; display:flex; align-items:center; justify-content:center; }
+    .title { font-size: 18px; font-weight: 700; color: #111827; }
+    .meta { text-align:right; font-size: 11px; color: #666; }
+
+    /* Summary cards */
+    .summary { display:flex; gap:12px; margin: 16px 0; flex-wrap:wrap; }
+    .card { flex: 1 1 200px; background: #ffffff; border-radius: 10px; box-shadow: 0 1px 6px rgba(20,20,50,0.04); padding: 12px; border: 1px solid rgba(15,23,42,0.04); }
+    .card h3 { margin:0; font-size: 13px; color:#6b7280; font-weight:600; }
+    .card .value { margin-top:8px; font-size: 18px; font-weight: 800; color: #111827; }
+
+    /* Sections */
+    .section { margin: 10px 0 22px 0; page-break-inside: avoid; }
+    .section h2 { margin: 0 0 10px 0; font-size: 15px; color:#0f172a; }
+
+    /* Table */
+    table { width: 100%; border-collapse: collapse; margin-bottom: 6px; table-layout:fixed; word-wrap:break-word; }
+    thead th { text-align: left; font-size: 12px; padding: 10px 8px; border-bottom: 1px solid #e6e6ef; background: linear-gradient(180deg,#fbfdff,#f6f8ff); }
+    tbody td { padding: 9px 8px; border-bottom: 1px solid #f1f3f7; font-size: 12px; color: #111827; }
+    tbody tr:nth-child(even) { background: #fbfbfe; }
+    .muted { color:#6b7280; font-size:11px; }
+
+    /* Totals row */
+    tfoot td { padding: 10px 8px; font-weight:700; border-top: 2px solid #e6e6ef; background:#f8fafc; }
+
+    /* Small text */
+    .small { font-size: 10px; color: #546; }
+
+    /* Footer & page number */
+    footer { position: fixed; bottom: 6mm; left: 0; right: 0; text-align: center; font-size: 10px; color: #6b7280; }
+    .pagenum:before { content: "Page " counter(page) " / " counter(pages); }
+
+    /* Signature */
+    .signature { margin-top: 24px; display:flex; justify-content:flex-end; align-items:center; gap:14px; }
+    .sig-line { border-top: 1px solid #ddd; width: 200px; text-align:center; padding-top:6px; font-size:11px; color:#444; }
+
+    /* Watermark (very subtle) */
+    .watermark {
+      position: fixed;
+      top: 40%;
+      left: 50%;
+      transform: translate(-50%, -50%) rotate(-30deg);
+      font-size: 56px;
+      color: rgba(200,200,210,0.08);
+      pointer-events:none;
+      user-select:none;
+      z-index: 0;
+    }
+
+    /* Responsive for long tables on small widths */
+    @media print {
+      body { -webkit-print-color-adjust: exact; }
+      .container { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <% /* Helpers: put these at top so we can re-use in template */ %>
+  <% 
+    function fmtCurrency(n){
+      if (n === undefined || n === null || isNaN(Number(n))) return '-';
+      try {
+        // Use en-IN formatting by default; change currency as needed.
+        return Number(n).toLocaleString('en-IN', { style: 'currency', currency: (typeof currency !== 'undefined' ? currency : 'INR') });
+      } catch(e){
+        return (Number(n).toFixed(2));
+      }
+    }
+    function fmtDate(d){
+      if (!d) return '-';
+      const dt = new Date(d);
+      if (isNaN(dt)) return d;
+      return dt.toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+
+    /* compute summaries */
+    const tenantsCount = (data.tenants || []).length;
+    const usersCount = (data.users || []).length;
+    const payments = (data.payments || []);
+    let totalRevenue = 0, paidCount = 0, pendingCount = 0;
+    payments.forEach(p => {
+      const amt = Number(p.amount) || 0;
+      totalRevenue += amt;
+      if ((p.status || '').toLowerCase().includes('paid')) paidCount++;
+      else pendingCount++;
+    });
+  %>
+
+  <div class="watermark">MyApp</div>
+
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <!-- inline svg / logo - keep self-contained -->
+          <svg width="120" height="44" xmlns="http://www.w3.org/2000/svg">
+            <rect width="120" height="44" fill="#4f46e5" rx="8"/>
+            <text x="12" y="28" font-family="Arial" font-size="14" fill="#fff">MyApp Billing</text>
+          </svg>
+        </div>
+        <div>
+          <div class="title"><%= title %></div>
+          <div class="muted">Billing Report — consolidated view</div>
+        </div>
+      </div>
+
+      <div class="meta">
+        <div>Generated: <strong><%= generatedAt %></strong></div>
+        <div class="muted">Records: Tenants <%= tenantsCount %> • Users <%= usersCount %> • Payments <%= payments.length %></div>
+      </div>
+    </header>
+
+    <!-- Summary cards -->
+    <section class="summary">
+      <div class="card">
+        <h3>Total Tenants</h3>
+        <div class="value"><%= tenantsCount %></div>
+        <div class="muted">Active tenant accounts</div>
+      </div>
+
+      <div class="card">
+        <h3>Total Users</h3>
+        <div class="value"><%= usersCount %></div>
+        <div class="muted">Users across tenants</div>
+      </div>
+
+      <div class="card">
+        <h3>Payments (count)</h3>
+        <div class="value"><%= payments.length %></div>
+        <div class="muted"><%= paidCount %> paid • <%= pendingCount %> pending</div>
+      </div>
+
+      <div class="card">
+        <h3>Total Revenue</h3>
+        <div class="value"><%= fmtCurrency(totalRevenue) %></div>
+        <div class="muted">Sum of payment amounts</div>
+      </div>
+    </section>
+
+    <!-- Tenants -->
+    <main>
+      <div class="section">
+        <h2>Tenants (<%= tenantsCount %>)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:36%;">Name</th>
+              <th style="width:36%;">Email</th>
+              <th style="width:28%;">Amount</th>
+              <th style="width:28%;">Plan</th>
+              <th style="width:28%;">Created At</th>
+              
+            </tr>
+          </thead>
+          <tbody>
+            <% (data.tenants || []).forEach(t => { %>
+              <tr>
+                <td><%= t.name || '-' %></td>
+                <td class="small"><%= t.email || '-' %></td>
+                <td><%= t.amount || '-' %></td>
+                <td><%= t.plan || '-' %></td>
+                <td><%= fmtDate(t.created_at || t.createdAt) %></td>
+                
+              </tr>
+            <% }) %>
+            <% if (!(data.tenants || []).length) { %>
+              <tr><td colspan="3" class="muted">No tenants available</td></tr>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Users -->
+      <div class="section page-break">
+        <h2>Users (<%= usersCount %>)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:36%;">Username</th>
+              
+              <th style="width:42%;">Email</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% (data.users || []).forEach(u => { %>
+              <tr>
+                <td><%= u.username || u.full_name || '-' %></td>
+                <td class="small"><%= u.email || '-' %></td>
+              </tr>
+            <% }) %>
+            <% if (!(data.users || []).length) { %>
+              <tr><td colspan="3" class="muted">No users available</td></tr>
+            <% } %>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Payments -->
+      <div class="section">
+        <h2>Payments (<%= payments.length %>)</h2>
+        <table>
+          <thead>
+            <tr>
+              <th style="width:18%;">Amount</th>
+              <th style="width:24%;">Date</th>
+              <th style="width:20%;">Status</th>
+              <th style="width:25%;">Transaction_id</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% payments.forEach(p => { %>
+              <tr>
+                
+                <td><%= fmtCurrency(p.amount) %></td>
+                <td><%= fmtDate(p.paid_at || p.paidAt || p.date) %></td>
+                <td><%= p.status || '-' %></td>
+                <td class="small"><%= p.ref || p.id || '-' %></td>
+              </tr>
+            <% }) %>
+            <% if (!payments.length) { %>
+              <tr><td colspan="5" class="muted">No payments available</td></tr>
+            <% } %>
+          </tbody>
+          <% if (payments.length) { %>
+            <tfoot>
+              <tr>
+                <td>Total</td>
+                <td><%= fmtCurrency(totalRevenue) %></td>
+                <td colspan="3" class="muted">Paid: <%= paidCount %> • Pending: <%= pendingCount %></td>
+              </tr>
+            </tfoot>
+          <% } %>
+        </table>
+
+        <div class="signature">
+          <div>
+            <div class="sig-line">Authorized Signature</div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <span>Generated by MyApp • <%= generatedAt %> • <span class="pagenum"></span></span>
+    </footer>
+  </div>
+</body>
+</html>
