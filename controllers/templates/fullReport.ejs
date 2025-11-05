@@ -162,7 +162,10 @@
             <tr>
               <th style="width:36%;">Name</th>
               <th style="width:36%;">Email</th>
+              <th style="width:28%;">Amount</th>
+              <th style="width:28%;">Plan</th>
               <th style="width:28%;">Created At</th>
+              
             </tr>
           </thead>
           <tbody>
@@ -170,7 +173,10 @@
               <tr>
                 <td><%= t.name || '-' %></td>
                 <td class="small"><%= t.email || '-' %></td>
+                <td><%= t.amount || '-' %></td>
+                <td><%= t.plan || '-' %></td>
                 <td><%= fmtDate(t.created_at || t.createdAt) %></td>
+                
               </tr>
             <% }) %>
             <% if (!(data.tenants || []).length) { %>
@@ -187,7 +193,7 @@
           <thead>
             <tr>
               <th style="width:36%;">Username</th>
-              <th style="width:22%;">Role</th>
+              
               <th style="width:42%;">Email</th>
             </tr>
           </thead>
@@ -195,7 +201,6 @@
             <% (data.users || []).forEach(u => { %>
               <tr>
                 <td><%= u.username || u.full_name || '-' %></td>
-                <td><%= u.role || '-' %></td>
                 <td class="small"><%= u.email || '-' %></td>
               </tr>
             <% }) %>
@@ -215,7 +220,7 @@
               <th style="width:18%;">Amount</th>
               <th style="width:24%;">Date</th>
               <th style="width:20%;">Status</th>
-              <th style="width:10%;">Ref</th>
+              <th style="width:25%;">Transaction_id</th>
             </tr>
           </thead>
           <tbody>

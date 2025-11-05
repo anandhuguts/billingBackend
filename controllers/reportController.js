@@ -338,6 +338,27 @@ export const exportReport = async (req, res) => {
       switch (r) {
         case "tenants": {
           tenants = (await supabase.from("tenants").select("*")).data || [];
+          // Compute summed amount per tenant from payments and attach to tenant objects
+          try {
+            const tenantIds = tenants.map((t) => t.id).filter(Boolean);
+            if (tenantIds.length) {
+              const { data: paymentsForTenants } = await supabase
+                .from("payments")
+                .select("tenant_id,amount")
+                .in("tenant_id", tenantIds);
+              const sums = (paymentsForTenants || []).reduce((acc, p) => {
+                const id = p.tenant_id;
+                acc[id] = (acc[id] || 0) + (Number(p.amount) || 0);
+                return acc;
+              }, {});
+              tenants = tenants.map((t) => ({ ...t, amount: sums[t.id] || 0 }));
+            } else {
+              tenants = tenants.map((t) => ({ ...t, amount: 0 }));
+            }
+          } catch (e) {
+            console.warn("Failed to compute tenant amounts:", e);
+            // leave tenants as-is (amount may be undefined)
+          }
           title = "Tenants Report";
           break;
         }
@@ -359,6 +380,26 @@ export const exportReport = async (req, res) => {
           payments = (await supabase.from("payments").select("*")).data || [];
           // Enrich payments
           payments = enrichData(tenants, users, payments).payments || [];
+          // Also attach summed amount to each tenant for reporting
+          try {
+            const tenantIds = tenants.map((t) => t.id).filter(Boolean);
+            if (tenantIds.length) {
+              const { data: paymentsForTenants } = await supabase
+                .from("payments")
+                .select("tenant_id,amount")
+                .in("tenant_id", tenantIds);
+              const sums = (paymentsForTenants || []).reduce((acc, p) => {
+                const id = p.tenant_id;
+                acc[id] = (acc[id] || 0) + (Number(p.amount) || 0);
+                return acc;
+              }, {});
+              tenants = tenants.map((t) => ({ ...t, amount: sums[t.id] || 0 }));
+            } else {
+              tenants = tenants.map((t) => ({ ...t, amount: 0 }));
+            }
+          } catch (e) {
+            console.warn("Failed to compute tenant amounts for all-data:", e);
+          }
           title = "Full Database Report";
           break;
         }
