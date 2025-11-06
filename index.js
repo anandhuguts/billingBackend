@@ -13,6 +13,7 @@ import { verifyToken } from "./middleware/verifyToken.js";
 import subscriberRoutes from "./routes/subscriber.js";
 import amcRoutes from "./routes/amc.js";
 import reportRoutes from "./routes/reportRouter.js";
+import billingRoutes from "./routes/billingRoutes.js";
 
 const app = express();
 
@@ -44,7 +45,7 @@ app.use("/subscriber", subscriberRoutes);
 app.use("/amc", amcRoutes);
 //report routes
 app.use("/reports", reportRoutes);
-
+app.use("/api/invoices", billingRoutes);
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
 const PORT = process.env.PORT || 5000;

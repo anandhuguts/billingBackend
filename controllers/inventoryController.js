@@ -79,14 +79,16 @@ export const getInventory = async (req, res) => {
 
     // 🧩 Flatten joined data so it matches your frontend object structure
     const formatted = data.map(item => ({
-      id: item.id,
-      quantity: item.quantity,
-      reorderLevel: item.reorder_level,
-      updatedAt: item.updated_at,
-      expiryDate: item.expiry_date,
-      maxStock: item.max_stock,
-      ...item.products // spread product details into same object
-    }));
+  inventory_id: item.id, // rename to avoid confusion
+  product_id: item.product_id, // ✅ keep original
+  quantity: item.quantity,
+  reorderLevel: item.reorder_level,
+  updatedAt: item.updated_at,
+  expiryDate: item.expiry_date,
+  maxStock: item.max_stock,
+  ...item.products
+}));
+
 
     return res.json({ data: formatted });
   } catch (err) {
