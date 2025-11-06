@@ -16,8 +16,11 @@ export const createInvoice = async (req, res) => {
     }
 
     // 🧮 Step 1 — Calculate totals
-    const subtotal = items.reduce((sum, item) => sum + (item.price * item.qty), 0);
-    const tax_total = items.reduce((sum, item) => sum + ((item.price * item.tax / 100) * item.qty), 0);
+    const subtotal = items.reduce((sum, item) => sum + item.price * item.qty, 0);
+    const tax_total = items.reduce(
+      (sum, item) => sum + (item.price * item.tax / 100) * item.qty,
+      0
+    );
     const total_amount = subtotal + tax_total;
 
     // 🧾 Step 2 — Create invoice
@@ -37,11 +40,11 @@ export const createInvoice = async (req, res) => {
 
     console.log("Created invoice:", invoice);
 
-    // 🧩 Step 3 — Insert invoice items
+    // 🧩 Step 3 — Insert invoice items (✅ FIXED HERE)
     const invoiceItems = items.map((item) => ({
       tenant_id,
       invoice_id: invoice.id,
-      product_id: item.id,
+      product_id: item.product_id, // ✅ CORRECT FIELD
       quantity: item.qty,
       price: item.price,
       tax: item.tax,
@@ -62,32 +65,28 @@ export const createInvoice = async (req, res) => {
         .from("inventory")
         .select("id, quantity, reorder_level, max_stock, product_id")
         .eq("tenant_id", tenant_id)
-        .eq("product_id", item.id)
+        .eq("product_id", item.product_id) // ✅ FIXED
         .single();
 
-   if (invErr || !invData) {
-  console.warn(`⚠️ Inventory not found for product_id: ${item.id}. Creating new entry...`);
+      if (invErr || !invData) {
+        console.warn(`⚠️ Inventory not found for product_id: ${item.product_id}. Creating new entry...`);
 
-  // Create a new inventory entry for this product
-  const { error: createErr } = await supabase
-    .from("inventory")
-    .insert([{
-      tenant_id,
-      product_id: item.id,
-      quantity: 0, // start at zero
-      reorder_level: 5, // or any default you want
-      max_stock: 100, // optional
-    }]);
+        const { error: createErr } = await supabase.from("inventory").insert([
+          {
+            tenant_id,
+            product_id: item.product_id, // ✅ FIXED
+            quantity: 0,
+            reorder_level: 5,
+            max_stock: 100,
+          },
+        ]);
 
-  if (createErr) {
-    console.error(`❌ Failed to create inventory record for product_id: ${item.id}`, createErr);
-    continue;
-  }
+        if (createErr) {
+          console.error(`❌ Failed to create inventory record for product_id: ${item.product_id}`, createErr);
+        }
 
-  // Since it was missing, there’s no stock to reduce further
-  continue;
-}
-
+        continue;
+      }
 
       const newQty = Math.max(0, (invData.quantity || 0) - item.qty);
 
@@ -98,20 +97,20 @@ export const createInvoice = async (req, res) => {
         .eq("tenant_id", tenant_id);
 
       if (updateErr) {
-        console.error(`Failed to update stock for product_id ${item.id}`, updateErr);
+        console.error(`Failed to update stock for product_id ${item.product_id}`, updateErr);
         continue;
       }
 
       if (newQty <= (invData.reorder_level || 0)) {
         lowStockAlerts.push({
-          product_id: item.id,
+          product_id: item.product_id, // ✅ FIXED
           newQty,
           reorder_level: invData.reorder_level,
         });
       }
     }
 
-    // 🧾 Step 5 — Fetch the generated invoice_number from the DB
+    // 🧾 Step 5 — Fetch the generated invoice_number from DB
     const { data: updatedInvoice, error: fetchError } = await supabase
       .from("invoices")
       .select("id, invoice_number, total_amount, payment_method, created_at")
@@ -127,7 +126,6 @@ export const createInvoice = async (req, res) => {
       items: invoiceItems,
       lowStockAlerts,
     });
-
   } catch (err) {
     console.error("❌ createInvoice error:", err);
     return res.status(500).json({ error: err.message || "Server error" });

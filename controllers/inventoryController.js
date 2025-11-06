@@ -79,7 +79,7 @@ export const getInventory = async (req, res) => {
 
     // 🧩 Flatten joined data so it matches your frontend object structure
     const formatted = data.map(item => ({
-  inventory_id: item.id, // rename to avoid confusion
+    id: item.id, // rename to avoid confusion
   product_id: item.product_id, // ✅ keep original
   quantity: item.quantity,
   reorderLevel: item.reorder_level,
