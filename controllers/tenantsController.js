@@ -92,8 +92,8 @@ export const getTenantById = async (req, res) => {
 // When a tenant is created, also create a corresponding user in the users table
 // The user record will be linked to the tenant via the tenant_id foreign key
 export const createTenant = async (req, res) => {
-  const { name, email, password, category, plan, status } = req.body;
-  if (!name || !email || !password || !category)
+  const { name, email, password, category, plan, status, phone } = req.body;
+  if (!name || !email || !password || !category || !phone)
     return res.status(400).json({ error: "Missing fields" });
 
   try {
@@ -110,6 +110,7 @@ export const createTenant = async (req, res) => {
           category,
           plan: plan || "trial",
           status: status || "active",
+          phone,
         },
       ])
       .select();
@@ -262,6 +263,115 @@ export const updateTenant = async (req, res) => {
   }
 };
 
+// update tenant phone number
+export const updateTenantPhoneNumber = async (req, res) => {
+  const { id } = req.params;
+  const { phone } = req.body;
+
+  if (!phone) return res.status(400).json({ error: "Missing phone number" });
+
+  try {
+    const { data, error } = await supabase
+      .from("tenants")
+      .update({ phone })
+      .eq("id", id)
+      .select();
+
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data || data.length === 0)
+      return res.status(404).json({ error: "Tenant not found" });
+
+    res.json({ message: "Tenant phone updated", tenant: data[0] });
+  } catch (err) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * Aggregated details endpoint:
+ * GET /api/tenants/:id/details
+ * Joins tenant + latest AMC + latest payment.
+ * Returns UI-ready DTO with preformatted strings.
+ */
+export const getTenantDetails = async (req, res) => {
+  const { id } = req.params;
+
+  // 1) tenant
+  const { data: tenant, error: tErr } = await supabase
+    .from("tenants")
+    .select("id, name, email, phone, category, plan, status, created_at, updated_at, modules")
+    .eq("id", id)
+    .single();
+
+  if (tErr || !tenant) {
+    return res.status(404).json({ error: tErr?.message || "Tenant not found" });
+  }
+
+  // 2) most recent AMC for this tenant (by end_date desc, then start_date desc)
+  const { data: amcRow, error: aErr } = await supabase
+    .from("amc")
+    .select("id, amc_number, plan, start_date, end_date, status, amount, billing_frequency, currency")
+    .eq("tenat_amcid", id)
+    .order("end_date", { ascending: false })
+    .order("start_date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (aErr) {
+    return res.status(500).json({ error: aErr.message });
+  }
+
+  // 3) latest payment for this tenant
+  const { data: paymentRow, error: pErr } = await supabase
+    .from("payments")
+    .select("id, payment_date, amount, plan, status, currency")
+    .eq("tenant_id", id)
+    .order("payment_date", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (pErr) {
+    return res.status(500).json({ error: pErr.message });
+  }
+
+  // currency fallback (prefer AMC currency; else payment; else AED)
+  const currency =
+    amcRow?.currency || paymentRow?.currency || "AED";
+
+  // build DTO
+  const dto = {
+    tenant,
+    amc: amcRow
+      ? {
+          amc_id: amcRow.id,
+          amc_number: amcRow.amc_number ?? null,
+          amc_status: computeAmcStatus(amcRow.start_date, amcRow.end_date),
+          billing_frequency: amcRow.billing_frequency ?? null,
+          billing_frequency_label: freqLabel(amcRow.billing_frequency),
+          currency,
+          amount: amcRow.amount ?? null,
+          amount_display: formatCurrency(amcRow.amount, currency),
+          start_date: amcRow.start_date ?? null,
+          start_date_display: formatDateDisplay(amcRow.start_date),
+          end_date: amcRow.end_date ?? null,
+          end_date_display: formatDateDisplay(amcRow.end_date)
+        }
+      : null,
+    latest_payment: paymentRow
+      ? {
+          id: paymentRow.id,
+          payment_date: paymentRow.payment_date ?? null,
+          payment_date_display: formatDateDisplay(paymentRow.payment_date),
+          amount: paymentRow.amount ?? null,
+          amount_display: formatCurrency(paymentRow.amount, currency),
+          plan: paymentRow.plan ?? null,
+          status: paymentRow.status ?? null
+        }
+      : null
+  };
+
+  return res.json(dto);
+};
 // DELETE tenant
 export const deleteTenant = async (req, res) => {
   const { id } = req.params;
