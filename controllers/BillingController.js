@@ -1,4 +1,7 @@
 import { supabase } from "../supabase/supabaseClient.js";
+import PDFDocument from "pdfkit";
+import fs from "fs";
+import path from "path";
 
 /**
  * @route POST /api/invoices
@@ -129,5 +132,57 @@ export const createInvoice = async (req, res) => {
   } catch (err) {
     console.error("❌ createInvoice error:", err);
     return res.status(500).json({ error: err.message || "Server error" });
+  }
+};
+
+export const generatePDF = async (req, res) => {
+  try {
+    const { invoiceNumber, items, subtotal, total, payment_method } = req.body;
+
+    // 1️⃣ Ensure the invoices folder exists
+    const invoicesDir = path.join(process.cwd(), "invoices");
+    if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir);
+
+    // 2️⃣ Create the new PDF
+    const filePath = path.join(invoicesDir, `invoice-${invoiceNumber}.pdf`);
+    const doc = new PDFDocument({ margin: 40 });
+    const stream = fs.createWriteStream(filePath);
+    doc.pipe(stream);
+
+    // 3️⃣ Write invoice content
+    doc.fontSize(18).text("SUPERMART", { align: "center" }).moveDown(0.5);
+    doc.fontSize(10).text(`Invoice No: ${invoiceNumber}`);
+    doc.text(`Date: ${new Date().toLocaleString()}`);
+    doc.moveDown(1);
+    doc.text("========================================", { align: "center" });
+
+    // 4️⃣ Add items
+    items.forEach((item) => {
+      doc.text(`${item.qty}x ${item.name} - AED ${item.total.toFixed(2)}`);
+    });
+
+    doc.moveDown(1);
+    doc.text("========================================", { align: "center" });
+
+    // 5️⃣ Totals
+    doc.text(`Subtotal: AED ${subtotal.toFixed(2)}`);
+    doc.text(`Payment Method: ${payment_method}`);
+    doc.fontSize(14).text(`Total: AED ${total.toFixed(2)}`, { align: "right" });
+
+    doc.moveDown(1.5);
+    doc.fontSize(10).text("Thank you for shopping with us!", { align: "center" });
+
+    doc.end();
+
+    // 6️⃣ Respond when done
+    stream.on("finish", () => {
+      res.status(200).json({
+        message: "Invoice PDF generated",
+        pdf_url: `http://localhost:5000/invoices/invoice-${invoiceNumber}.pdf`,
+      });
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to generate invoice PDF" });
   }
 };

@@ -2,12 +2,11 @@ import { supabase } from "../supabase/supabaseClient.js";
 
 // Create inventory item
 export const createInventory = async (req, res) => {
-
   console.log("Incoming body:", req.body);
 
   try {
     const tenant_id = req.user.tenant_id;
-    const { product_id, quantity = 0, cost_price = 0, selling_price = 0,expiry_date,max_stock, reorder_level = 0 } = req.body;
+    const { product_id, quantity = 0, expiry_date, max_stock, reorder_level = 0 } = req.body;
 
     if (!product_id) return res.status(400).json({ error: "product_id required" });
 
@@ -20,7 +19,7 @@ export const createInventory = async (req, res) => {
         reorder_level,
         expiry_date,
         max_stock
-     
+        // Remove cost_price and selling_price from here
       }])
       .select()
       .single();
@@ -32,7 +31,6 @@ export const createInventory = async (req, res) => {
     return res.status(500).json({ error: err.message || "Server error" });
   }
 };
-
 // Get list (tenant scoped, with optional product join)
 // ✅ Get inventory with joined product details
 export const getInventory = async (req, res) => {
@@ -60,7 +58,8 @@ export const getInventory = async (req, res) => {
           cost_price,
           selling_price,
           tax_percent,
-          barcode
+          barcode,
+          sku
           
           
         )
@@ -103,12 +102,12 @@ export const updateInventory = async (req, res) => {
   try {
     const tenant_id = req.user.tenant_id;
     const { id } = req.params;
-    const payload = req.body;
+    const { cost_price, selling_price, ...validPayload } = req.body; // Remove invalid fields
 
     // Ensure update is applied only for this tenant's record
     const { data, error } = await supabase
       .from("inventory")
-      .update(payload)
+      .update(validPayload) // Only use valid fields
       .match({ id: Number(id), tenant_id })
       .select()
       .single();
@@ -121,7 +120,6 @@ export const updateInventory = async (req, res) => {
     return res.status(500).json({ error: err.message || "Server error" });
   }
 };
-
 // Delete inventory item
 export const deleteInventory = async (req, res) => {
   try {
