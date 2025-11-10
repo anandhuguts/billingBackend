@@ -18,6 +18,9 @@ import subscriberRoutes from "./routes/subscriber.js";
 import amcRoutes from "./routes/amc.js";
 import reportRoutes from "./routes/reportRouter.js";
 import billingRoutes from "./routes/billingRoutes.js";
+import purchaseRoutes from "./routes/purchaseRoutes.js";
+import supplierRoutes from "./routes/supplierRoutes.js";
+import invoiceRoutes from "./routes/invoiceRoutes.js";
 
 const app = express();
 
@@ -53,7 +56,9 @@ app.use("/reports", reportRoutes);
 
 // ✅ Billing route (after static invoices)
 app.use("/api/invoices", billingRoutes);
-
+app.use("/api/purchases",verifyToken,purchaseRoutes);
+app.use("/api/suppliers", supplierRoutes);
+app.use("/api/invoices", verifyToken, invoiceRoutes);
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
 // Server listen
