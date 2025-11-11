@@ -32,12 +32,24 @@ const __dirname = path.dirname(__filename);
 app.use("/invoices", express.static(path.join(__dirname, "invoices")));
 
 // Configure CORS with sensible defaults
+const allowedOrigins = [
+  "https://tenant-sphere.vercel.app", // your Vercel frontend
+  "http://localhost:5173", // for local dev (if using Vite)
+];
+
 const corsOptions = {
-  origin: process.env.FRONTEND_ORIGIN || "*",
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
-  exposedHeaders: ["Content-Disposition", "Content-Length", "Content-Type"],
-  credentials: process.env.CORS_ALLOW_CREDENTIALS === "true" ? true : false,
+  credentials: true, // ✅ must be true if you're sending cookies or JWT tokens
 };
 
 app.use(cors(corsOptions));
@@ -56,7 +68,7 @@ app.use("/reports", reportRoutes);
 
 // ✅ Billing route (after static invoices)
 app.use("/api/invoices", billingRoutes);
-app.use("/api/purchases",verifyToken,purchaseRoutes);
+app.use("/api/purchases", verifyToken, purchaseRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/invoices", verifyToken, invoiceRoutes);
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
