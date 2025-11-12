@@ -10,6 +10,7 @@ import authRoutes from "./routes/authRoutes.js";
 import subscriberRoutes from "./routes/subscriber.js";
 import amcRoutes from "./routes/amc.js";
 import reportRoutes from "./routes/reportRouter.js";
+import notificationRoutes from "./routes/notification.js";
 
 const app = express();
 
@@ -39,6 +40,8 @@ app.use("/subscriber", subscriberRoutes);
 app.use("/amc", amcRoutes);
 //report routes
 app.use("/reports", reportRoutes);
+
+app.use("/notification", notificationRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 

@@ -215,7 +215,8 @@ export const createTenant = async (req, res) => {
 // Update tenant and return with all associated AMC records
 export const updateTenant = async (req, res) => {
   const { id } = req.params;
-  const { name, email, password, category, plan, status, modules } = req.body;
+  const { name, email, password, category, plan, status, phone, modules } =
+    req.body;
   try {
     const updateData = {};
     if (name) updateData.name = name;
@@ -224,6 +225,7 @@ export const updateTenant = async (req, res) => {
     if (plan) updateData.plan = plan;
     if (status) updateData.status = status;
     if (modules) updateData.modules = modules;
+    if (phone) updateData.phone = phone;
     if (password) updateData.password = await bcrypt.hash(password, 10);
 
     const { data, error } = await supabase
@@ -299,7 +301,9 @@ export const getTenantDetails = async (req, res) => {
   // 1) tenant
   const { data: tenant, error: tErr } = await supabase
     .from("tenants")
-    .select("id, name, email, phone, category, plan, status, created_at, updated_at, modules")
+    .select(
+      "id, name, email, phone, category, plan, status, created_at, updated_at, modules"
+    )
     .eq("id", id)
     .single();
 
@@ -310,7 +314,9 @@ export const getTenantDetails = async (req, res) => {
   // 2) most recent AMC for this tenant (by end_date desc, then start_date desc)
   const { data: amcRow, error: aErr } = await supabase
     .from("amc")
-    .select("id, amc_number, plan, start_date, end_date, status, amount, billing_frequency, currency")
+    .select(
+      "id, amc_number, plan, start_date, end_date, status, amount, billing_frequency, currency"
+    )
     .eq("tenat_amcid", id)
     .order("end_date", { ascending: false })
     .order("start_date", { ascending: false })
@@ -335,8 +341,7 @@ export const getTenantDetails = async (req, res) => {
   }
 
   // currency fallback (prefer AMC currency; else payment; else AED)
-  const currency =
-    amcRow?.currency || paymentRow?.currency || "AED";
+  const currency = amcRow?.currency || paymentRow?.currency || "AED";
 
   // build DTO
   const dto = {
@@ -354,7 +359,7 @@ export const getTenantDetails = async (req, res) => {
           start_date: amcRow.start_date ?? null,
           start_date_display: formatDateDisplay(amcRow.start_date),
           end_date: amcRow.end_date ?? null,
-          end_date_display: formatDateDisplay(amcRow.end_date)
+          end_date_display: formatDateDisplay(amcRow.end_date),
         }
       : null,
     latest_payment: paymentRow
@@ -365,9 +370,9 @@ export const getTenantDetails = async (req, res) => {
           amount: paymentRow.amount ?? null,
           amount_display: formatCurrency(paymentRow.amount, currency),
           plan: paymentRow.plan ?? null,
-          status: paymentRow.status ?? null
+          status: paymentRow.status ?? null,
         }
-      : null
+      : null,
   };
 
   return res.json(dto);
@@ -376,6 +381,24 @@ export const getTenantDetails = async (req, res) => {
 export const deleteTenant = async (req, res) => {
   const { id } = req.params;
   try {
+    // First, delete dependent records to avoid FK or orphaned rows.
+    // Delete users linked to tenant
+    let deletedUsers = [];
+    try {
+      const { data: du, error: duErr } = await supabase
+        .from("users")
+        .delete()
+        .eq("tenant_id", id)
+        .select();
+      if (duErr) console.warn("Failed to delete users for tenant", id, duErr);
+      deletedUsers = du || [];
+    } catch (e) {
+      console.warn("Unexpected error deleting users for tenant", id, e);
+    }
+
+
+
+    // Finally delete the tenant row
     const { data, error } = await supabase
       .from("tenants")
       .delete()
@@ -384,7 +407,15 @@ export const deleteTenant = async (req, res) => {
     if (error) return res.status(500).json({ error: error.message });
     if (!data || data.length === 0)
       return res.status(404).json({ error: "Tenant not found" });
-    res.json({ message: "Tenant deleted", tenant: data[0] });
+
+    res.json({
+      message: "Tenant and related data deleted",
+      tenant: data[0],
+      deleted: {
+        users: deletedUsers.length,
+        
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: "Internal server error" });
   }
