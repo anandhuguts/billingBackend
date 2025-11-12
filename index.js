@@ -32,12 +32,23 @@ const __dirname = path.dirname(__filename);
 app.use("/invoices", express.static(path.join(__dirname, "invoices")));
 
 // Configure CORS with sensible defaults
+const allowedOrigins = [
+  "https://tenant-sphere.vercel.app",
+  "http://localhost:8080"
+];
+
 const corsOptions = {
-  origin: process.env.FRONTEND_ORIGIN || "*",
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   exposedHeaders: ["Content-Disposition", "Content-Length", "Content-Type"],
-  credentials: process.env.CORS_ALLOW_CREDENTIALS === "true" ? true : false,
+  credentials: true, // since you're verifying tokens
 };
 
 app.use(cors(corsOptions));
