@@ -67,7 +67,7 @@ app.use("/reports", reportRoutes);
 
 // ✅ Billing route (after static invoices)
 app.use("/api/invoices", billingRoutes);
-app.use("/api/purchases",verifyToken,purchaseRoutes);
+app.use("/api/purchases", verifyToken, purchaseRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/invoices", verifyToken, invoiceRoutes);
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
