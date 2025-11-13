@@ -106,7 +106,6 @@ export const createTenant = async (req, res) => {
         {
           name,
           email,
-          password: hashedPassword,
           category,
           plan: plan || "trial",
           status: status || "active",
