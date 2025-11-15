@@ -22,6 +22,9 @@ import purchaseRoutes from "./routes/purchaseRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import invoiceRoutes from "./routes/invoiceRoutes.js";
 import notificationRoutes from "./routes/notification.js";
+import usersRouter from "./routes/userRouter.js";
+import settingsRouter from "./routes/settings.js";
+import plansRouter from "./routes/plansRouter.js";
 
 const app = express();
 
@@ -35,7 +38,7 @@ app.use("/invoices", express.static(path.join(__dirname, "invoices")));
 // Configure CORS with sensible defaults
 const allowedOrigins = [
   "https://tenant-sphere.vercel.app",
-  "http://localhost:8080"
+  "http://localhost:8080",
 ];
 
 const corsOptions = {
@@ -65,6 +68,9 @@ app.use("/api/products", product);
 app.use("/subscriber", subscriberRoutes);
 app.use("/amc", amcRoutes);
 app.use("/reports", reportRoutes);
+app.use("/users", usersRouter);
+app.use("/settings", verifyToken, settingsRouter);
+app.use("/plans", plansRouter);
 
 // ✅ Billing route (after static invoices)
 app.use("/api/invoices", billingRoutes);
@@ -72,6 +78,8 @@ app.use("/api/purchases", verifyToken, purchaseRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/invoices", verifyToken, invoiceRoutes);
 app.use("/notification", notificationRoutes);
+
+
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 

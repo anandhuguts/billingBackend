@@ -106,7 +106,6 @@ export const createTenant = async (req, res) => {
         {
           name,
           email,
-          password: hashedPassword,
           category,
           plan: plan || "trial",
           status: status || "active",
@@ -214,7 +213,6 @@ export const createTenant = async (req, res) => {
 // UPDATE tenant
 // Update tenant and return with all associated AMC records
 export const updateTenant = async (req, res) => {
-  console.log("Update tenant request body:", req.body);
   const { id } = req.params;
   const { name, email, password, category, plan, status, phone, modules } =
     req.body;
