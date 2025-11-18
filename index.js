@@ -25,6 +25,7 @@ import notificationRoutes from "./routes/notification.js";
 import usersRouter from "./routes/userRouter.js";
 import settingsRouter from "./routes/settings.js";
 import plansRouter from "./routes/plansRouter.js";
+import subscriptionAmountsRouter from "./routes/subscriptionAmounts.js";
 
 const app = express();
 
@@ -59,27 +60,28 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // Routes
-app.use("/tenants", verifyToken, tenantsRoutes);
-app.use("/reports/dashboard", verifyToken, dashboardRoutes);
-app.use("/tenants", verifyToken, modulesRoutes);
+app.use("/api/tenants", verifyToken, tenantsRoutes);
+app.use("/api/reports/dashboard", verifyToken, dashboardRoutes);
+app.use("/api/tenants", verifyToken, modulesRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/inventory", verifyToken, inventory);
 app.use("/api/products", product);
-app.use("/subscriber", subscriberRoutes);
-app.use("/amc", amcRoutes);
-app.use("/reports", reportRoutes);
-app.use("/users", usersRouter);
-app.use("/settings", verifyToken, settingsRouter);
-app.use("/plans", plansRouter);
+app.use("/api/subscriber", subscriberRoutes);
+app.use("/api/amc", amcRoutes);
+app.use("/api/reports", reportRoutes);
+app.use("/api/users", usersRouter);
+app.use("/api/settings", verifyToken, settingsRouter);
+app.use("/api/plans", plansRouter);
+// Provide both singular and plural endpoints for frontend compatibility
+
+app.use("/api/subscription_amount_plans", subscriptionAmountsRouter);
 
 // ✅ Billing route (after static invoices)
 app.use("/api/invoices", billingRoutes);
 app.use("/api/purchases", verifyToken, purchaseRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/invoices", verifyToken, invoiceRoutes);
-app.use("/notification", notificationRoutes);
-
-
+app.use("/api/notification", notificationRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
