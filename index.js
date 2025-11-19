@@ -22,6 +22,7 @@ import purchaseRoutes from "./routes/purchaseRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import invoiceRoutes from "./routes/invoiceRoutes.js";
 import notificationRoutes from "./routes/notification.js";
+import staffRoutes from "./routes/staffRoute.js";
 
 const app = express();
 
@@ -72,6 +73,8 @@ app.use("/api/purchases", verifyToken, purchaseRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/invoices", verifyToken, invoiceRoutes);
 app.use("/notification", notificationRoutes);
+
+app.use("/api/staff",verifyToken, staffRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
