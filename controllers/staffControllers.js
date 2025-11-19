@@ -24,17 +24,28 @@ export const StaffController = {
   },
 
   // CREATE staff
-  async create(req, res) {
-    try {
-      const { full_name, email, password, role, is_active } = req.body;
-      const { tenant_id } = req.user;
+  // CREATE staff
+// CREATE staff
+async create(req, res) {
+  try {
+    const { full_name, email, password, role, is_active } = req.body;
+    const { tenant_id } = req.user;
 
-      if (!full_name || !email || !password)
-        return res.status(400).json({ error: "Required fields missing" });
+    console.log("Incoming body:", req.body);
+    console.log("Tenant ID:", tenant_id);
 
-      const hashedPassword = await bcrypt.hash(password, 10);
+    // Basic validation
+    if (!full_name || !email || !password) {
+      return res.status(400).json({ error: "Required fields missing" });
+    }
 
-      const { data, error } = await supabase.from("users").insert([
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insert staff
+    const { data, error } = await supabase
+      .from("users")
+      .insert([
         {
           full_name,
           email,
@@ -43,18 +54,37 @@ export const StaffController = {
           tenant_id,
           is_active: is_active ?? true,
         },
-      ]).select("id, full_name, email, role, is_active");
+      ])
+      .select("id, full_name, email, role, is_active"); // forces RETURNING
 
-      if (error) throw error;
+    console.log("Supabase error:", error);
+    console.log("Supabase data:", data);
 
-      return res.json({ success: true, data: data[0] });
-    } catch (error) {
-      if (error.code === "23505") {
-        return res.status(400).json({ error: "Email already registered" });
-      }
-      return res.status(500).json({ error: error.message });
+    // Duplicate email error
+    if (error && error.code === "23505") {
+      return res.status(400).json({ error: "Email already registered" });
     }
-  },
+
+    // Other insert error
+    if (error) {
+      throw error;
+    }
+
+    // Supabase sometimes inserts but returns null (RETURNING disabled)
+    if (!data || data.length === 0) {
+      return res.json({
+        success: true,
+        message: "Staff created successfully",
+      });
+    }
+
+    // Success with returned row
+    return res.json({ success: true, data: data[0] });
+  } catch (error) {
+    console.error("Server error:", error);
+    return res.status(500).json({ error: error.message });
+  }
+},
 
   // UPDATE staff
   async update(req, res) {
