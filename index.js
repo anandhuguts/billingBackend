@@ -14,6 +14,7 @@ import authRoutes from "./routes/authRoutes.js";
 import inventory from "./routes/inventoryRoutes.js";
 import product from "./routes/productRoutes.js";
 import { verifyToken } from "./middleware/verifyToken.js";
+import { requireRole } from "./middleware/requireRole.js";
 import subscriberRoutes from "./routes/subscriber.js";
 import amcRoutes from "./routes/amc.js";
 import reportRoutes from "./routes/reportRouter.js";
@@ -60,7 +61,10 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // Routes
+// Tenant management should be admin-only. Protect it server-side so
+// changing client-side values can't grant access.
 app.use("/api/tenants", verifyToken, tenantsRoutes);
+//app.use("/api/tenants", verifyToken, requireRole("super_admin"), tenantsRoutes);
 app.use("/api/reports/dashboard", verifyToken, dashboardRoutes);
 app.use("/api/tenants", verifyToken, modulesRoutes);
 app.use("/api/auth", authRoutes);
