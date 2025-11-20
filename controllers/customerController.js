@@ -1,6 +1,7 @@
 import { supabase } from "../supabase/supabaseClient.js";
 
 export const CustomerController = {
+
   /* ======================================================
      GET ALL CUSTOMERS (TENANT-BASED)
   ====================================================== */
@@ -17,40 +18,58 @@ export const CustomerController = {
       if (error) throw error;
 
       return res.json({ success: true, data });
+
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
   },
 
   /* ======================================================
-     CREATE CUSTOMER (TENANT-BASED)
+     CREATE CUSTOMER (WITH UNIQUE PHONE HANDLING)
   ====================================================== */
   async create(req, res) {
     try {
-      const body = req.body;
       const { tenant_id } = req.user;
+      const body = req.body;
 
-      if (!body.name || !body.phone) {
+      const name = (body.name || "").trim();
+      const phone = (body.phone || "").trim();
+      const email = body.email ? body.email.trim() : null;
+
+      if (!name || !phone) {
         return res.status(400).json({ error: "Name and phone are required" });
       }
 
-      const customerData = {
-        ...body,
-        tenant_id,
-      };
-
+      // Insert customer
       const { data, error } = await supabase
         .from("customers")
-        .insert([customerData])
-        .select("*");
+        .insert([
+          {
+            ...body,
+            name,
+            phone,
+            email,
+            tenant_id,
+          }
+        ])
+        .select("*")
+        .single();
+
+      // Handle Supabase unique constraint error (Postgres code 23505)
+      if (error && error.code === "23505") {
+        return res.status(400).json({
+          error: "Customer with this phone already exists for your store",
+        });
+      }
 
       if (error) throw error;
 
       return res.json({
         success: true,
         message: "Customer created successfully",
-        data: data[0],
+        data,
       });
+
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -73,34 +92,50 @@ export const CustomerController = {
       if (error) throw error;
 
       return res.json({ success: true, data });
+
     } catch (error) {
       return res.status(404).json({ error: "Customer not found" });
     }
   },
 
   /* ======================================================
-     UPDATE CUSTOMER
+     UPDATE CUSTOMER (UNIQUE PHONE PROTECTED)
   ====================================================== */
   async update(req, res) {
     try {
       const { id } = req.params;
       const { tenant_id } = req.user;
+      const body = req.body;
 
-      const updateValues = req.body;
+      const updateData = {
+        ...body,
+      };
+
+      if (body.phone) updateData.phone = body.phone.trim();
+      if (body.email) updateData.email = body.email.trim();
+      if (body.name) updateData.name = body.name.trim();
 
       const { data, error } = await supabase
         .from("customers")
-        .update(updateValues)
+        .update(updateData)
         .match({ id, tenant_id })
-        .select();
+        .select()
+        .single();
+
+      if (error && error.code === "23505") {
+        return res.status(400).json({
+          error: "Another customer already uses this phone number",
+        });
+      }
 
       if (error) throw error;
 
       return res.json({
         success: true,
         message: "Customer updated successfully",
-        data: data[0],
+        data,
       });
+
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -125,6 +160,7 @@ export const CustomerController = {
         success: true,
         message: "Customer deleted",
       });
+
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -141,12 +177,13 @@ export const CustomerController = {
       const { data, error } = await supabase
         .from("customers")
         .select("*")
-        .match({ tenant_id })
+        .eq("tenant_id", tenant_id)
         .or(`name.ilike.%${keyword}%,phone.ilike.%${keyword}%`);
 
       if (error) throw error;
 
       return res.json({ success: true, data });
+
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
