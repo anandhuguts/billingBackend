@@ -90,11 +90,12 @@ app.use("/api/purchases", verifyToken, purchaseRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/invoices", verifyToken, invoiceRoutes);
 app.use("/api/notification", notificationRoutes);
+app.use("/api/discounts", verifyToken, discountRoutes);
 
 app.use("/api/staff",verifyToken, staffRoutes);
 app.use("/api/customers",verifyToken, customerRoutes);
 app.use("/api/loyalty-rules",verifyToken, loyaltyRoutes);
-app.use("/api/discounts", discountRoutes);
+
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 

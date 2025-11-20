@@ -289,17 +289,18 @@ export const createInvoice = async (req, res) => {
     }
 
     // 6) Insert invoice_items with per-line discount & net_price
-    const invoiceItemsToInsert = itemsWithDiscounts.map(it => ({
-      tenant_id,
-      invoice_id: invoice.id,
-      product_id: it.product_id,
-      quantity: it.qty,
-      price: it.price,
-      tax: it.tax,
-      discount_amount: it.discount_amount,
-      net_price: it.net_price,
-      total: it.net_price
-    }));
+const invoiceItemsToInsert = itemsWithDiscounts.map(it => ({
+  tenant_id,
+  invoice_id: invoice.id,
+  product_id: it.product_id,
+  quantity: it.qty,
+  price: it.price,
+  tax: it.tax,
+  discount_amount: it.discount_amount,   // REQUIRED for net_price generation
+  total: it.net_price                    // OR use baseWithTax if you prefer
+  // DO NOT include net_price (Postgres will auto-generate it)
+}));
+
 
     const { error: itemsError } = await supabase.from("invoice_items").insert(invoiceItemsToInsert);
     if (itemsError) throw itemsError;
@@ -355,13 +356,13 @@ export const createInvoice = async (req, res) => {
     let earn_points = 0;
     if (isLoyaltyCustomer) {
       // fetch loyalty earning rule if exists
-      const { data: earnRule } = await supabase
-        .from("loyalty_rules")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("is_active", true)
-        .single()
-        .catch(() => ({ data: null }));
+    const { data: earnRule } = await supabase
+  .from("loyalty_rules")
+  .select("*")
+  .eq("tenant_id", tenant_id)
+  .eq("is_active", true)
+  .maybeSingle();
+
 
       if (earnRule && earnRule.points_per_currency && earnRule.currency_unit) {
         const currency_unit = parseFloat(earnRule.currency_unit || 100);
@@ -404,13 +405,37 @@ export const createInvoice = async (req, res) => {
     }).eq("id", invoice.id);
 
     // Final response
-    return res.status(201).json({
-      message: "Invoice created successfully",
-      invoice,
-      items: invoiceItemsToInsert,
-      lowStockAlerts,
-      loyalty: isLoyaltyCustomer ? { earned: earn_points, redeemed: redeem_points, final_balance: currentPoints } : null
-    });
+  // 12) Fetch product names and merge into items
+const productIds = [...new Set(invoiceItemsToInsert.map(i => i.product_id))];
+
+const { data: productData, error: prodErr } = await supabase
+  .from("products")
+  .select("id, name")
+  .in("id", productIds);
+
+if (prodErr) throw prodErr;
+
+const productMap = {};
+productData.forEach(p => {
+  productMap[p.id] = p.name;
+});
+
+const itemsWithNames = invoiceItemsToInsert.map(it => ({
+  ...it,
+  name: productMap[it.product_id] || "Unknown"
+}));
+
+// 13) Return final response
+return res.status(201).json({
+  message: "Invoice created successfully",
+  invoice,
+  items: itemsWithNames,
+  lowStockAlerts,
+  loyalty: isLoyaltyCustomer
+    ? { earned: earn_points, redeemed: redeem_points, final_balance: currentPoints }
+    : null
+});
+
 
   } catch (err) {
     console.error("createInvoice error:", err);
