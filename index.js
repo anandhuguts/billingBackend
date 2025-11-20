@@ -30,6 +30,7 @@ import plansRouter from "./routes/plansRouter.js";
 import subscriptionAmountsRouter from "./routes/subscriptionAmounts.js";
 import customerRoutes from "./routes/customerRoutes.js";
 import loyaltyRoutes from "./routes/loyaltyRoutes.js";
+import discountRoutes from "./routes/discountRoutes.js";
 
 const app = express();
 
@@ -93,6 +94,7 @@ app.use("/api/notification", notificationRoutes);
 app.use("/api/staff",verifyToken, staffRoutes);
 app.use("/api/customers",verifyToken, customerRoutes);
 app.use("/api/loyalty-rules",verifyToken, loyaltyRoutes);
+app.use("/api/discounts", discountRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
