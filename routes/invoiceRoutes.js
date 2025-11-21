@@ -6,7 +6,7 @@ const router = express.Router();
 
 router.get('/', getAllInvoices);
 router.delete('/:id', deleteInvoice);
-router.post("/preview", verifyToken, previewInvoice);
+router.post("/preview", previewInvoice);
 
 
 export default router;

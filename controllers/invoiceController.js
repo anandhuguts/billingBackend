@@ -1,5 +1,6 @@
 // controllers/invoiceController.js
 import { supabase } from "../supabase/supabaseClient.js";
+import { applyDiscounts } from "../controllers/BillingController.js";
 
 // GET /api/invoices - Get all invoices with items
 export const getAllInvoices = async (req, res) => {

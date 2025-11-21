@@ -8,7 +8,7 @@ import path from "path";
  * Discount engine: applyDiscounts
  * Returns object with items (with discount_amount & net_price), totals and invoiceDiscounts list.
  */
-async function applyDiscounts({ items, tenant_id, customer = null, couponCode = null }) {
+export async function applyDiscounts({ items, tenant_id, customer = null, couponCode = null }) {
   // fetch active discount rules for tenant
   const { data: rules = [], error: rulesErr } = await supabase
     .from("discount_rules")
