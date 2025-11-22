@@ -1,5 +1,6 @@
 // controllers/invoiceController.js
 import { supabase } from "../supabase/supabaseClient.js";
+import { applyDiscounts } from "../controllers/BillingController.js";
 
 // GET /api/invoices - Get all invoices with items
 export const getAllInvoices = async (req, res) => {
@@ -81,5 +82,89 @@ export const deleteInvoice = async (req, res) => {
   } catch (err) {
     console.error("❌ Invoice deletion failed:", err);
     return res.status(500).json({ error: err.message || "Server Error" });
+  }
+};
+
+export const previewInvoice = async (req, res) => {
+  try {
+    const tenant_id = req.user.tenant_id;
+    const { items = [], customer_id = null, coupon_code = null } = req.body;
+
+    if (!items || items.length === 0)
+      return res.status(400).json({ error: "No items provided" });
+
+    // Fetch customer if selected
+    let customer = null;
+    if (customer_id) {
+      const { data, error } = await supabase
+        .from("customers")
+        .select("id, membership_tier, loyalty_points")
+        .eq("id", customer_id)
+        .eq("tenant_id", tenant_id)
+        .single();
+
+      if (error || !data) return res.status(404).json({ error: "Customer not found" });
+
+      customer = data;
+    }
+
+    // Reuse discount engine (same as in createInvoice)
+    let discountResult;
+    try {
+      discountResult = await applyDiscounts({ 
+        items, 
+        tenant_id, 
+        customer, 
+        couponCode: coupon_code 
+      });
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    const {
+      items: itemsWithDiscounts,
+      subtotal,
+      item_discount_total,
+      bill_discount_total,
+      coupon_discount_total,
+      membership_discount_total,
+      total_before_redeem,
+    } = discountResult;
+
+    // Estimate loyalty points (preview only)
+    let preview_loyalty_points = 0;
+
+    const { data: rule } = await supabase
+      .from("loyalty_rules")
+      .select("*")
+      .eq("tenant_id", tenant_id)
+      .eq("is_active", true)
+      .maybeSingle();
+
+    if (rule) {
+      preview_loyalty_points = Math.floor(
+        (total_before_redeem / rule.currency_unit) * rule.points_per_currency
+      );
+    } else {
+      preview_loyalty_points = Math.floor(total_before_redeem / 100);
+    }
+
+    return res.json({
+      success: true,
+      preview: {
+        subtotal,
+        total: total_before_redeem,
+        item_discount_total,
+        bill_discount_total,
+        coupon_discount_total,
+        membership_discount_total,
+        preview_loyalty_points,
+      },
+      items: itemsWithDiscounts
+    });
+
+  } catch (err) {
+    console.error("previewInvoice error:", err);
+    return res.status(500).json({ error: err.message || "Server error" });
   }
 };

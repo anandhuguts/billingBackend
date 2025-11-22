@@ -14,6 +14,7 @@ import authRoutes from "./routes/authRoutes.js";
 import inventory from "./routes/inventoryRoutes.js";
 import product from "./routes/productRoutes.js";
 import { verifyToken } from "./middleware/verifyToken.js";
+import { requireRole } from "./middleware/requireRole.js";
 import subscriberRoutes from "./routes/subscriber.js";
 import amcRoutes from "./routes/amc.js";
 import reportRoutes from "./routes/reportRouter.js";
@@ -21,6 +22,15 @@ import billingRoutes from "./routes/billingRoutes.js";
 import purchaseRoutes from "./routes/purchaseRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
 import invoiceRoutes from "./routes/invoiceRoutes.js";
+import notificationRoutes from "./routes/notification.js";
+import staffRoutes from "./routes/staffRoute.js";
+import usersRouter from "./routes/userRouter.js";
+import settingsRouter from "./routes/settings.js";
+import plansRouter from "./routes/plansRouter.js";
+import subscriptionAmountsRouter from "./routes/subscriptionAmounts.js";
+import customerRoutes from "./routes/customerRoutes.js";
+import loyaltyRoutes from "./routes/loyaltyRoutes.js";
+import discountRoutes from "./routes/discountRoutes.js";
 
 const app = express();
 
@@ -33,15 +43,13 @@ app.use("/invoices", express.static(path.join(__dirname, "invoices")));
 
 // Configure CORS with sensible defaults
 const allowedOrigins = [
-  "https://tenant-sphere.vercel.app", // your Vercel frontend
-  "http://localhost:5173", // for local dev (if using Vite)
+  "https://tenant-sphere.vercel.app",
+  "http://localhost:8080",
 ];
 
 const corsOptions = {
-  origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error("Not allowed by CORS"));
@@ -49,28 +57,46 @@ const corsOptions = {
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true, // ✅ must be true if you're sending cookies or JWT tokens
+  exposedHeaders: ["Content-Disposition", "Content-Length", "Content-Type"],
+  credentials: true, // since you're verifying tokens
 };
 
 app.use(cors(corsOptions));
 app.use(express.json());
 
 // Routes
-app.use("/tenants", verifyToken, tenantsRoutes);
-app.use("/reports/dashboard", verifyToken, dashboardRoutes);
-app.use("/tenants", verifyToken, modulesRoutes);
+// Tenant management should be admin-only. Protect it server-side so
+// changing client-side values can't grant access.
+app.use("/api/tenants", verifyToken, tenantsRoutes);
+//app.use("/api/tenants", verifyToken, requireRole("super_admin"), tenantsRoutes);
+app.use("/api/reports/dashboard", verifyToken, dashboardRoutes);
+app.use("/api/tenants", verifyToken, modulesRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/inventory", verifyToken, inventory);
 app.use("/api/products", product);
-app.use("/subscriber", subscriberRoutes);
-app.use("/amc", amcRoutes);
-app.use("/reports", reportRoutes);
+app.use("/api/subscriber", subscriberRoutes);
+app.use("/api/amc", amcRoutes);
+app.use("/api/reports", reportRoutes);
+app.use("/api/users", usersRouter);
+app.use("/api/settings", verifyToken, settingsRouter);
+app.use("/api/plans", plansRouter);
+// Provide both singular and plural endpoints for frontend compatibility
+
+app.use("/api/subscription_amount_plans", subscriptionAmountsRouter);
 
 // ✅ Billing route (after static invoices)
 app.use("/api/invoices", billingRoutes);
 app.use("/api/purchases", verifyToken, purchaseRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/invoices", verifyToken, invoiceRoutes);
+app.use("/api/notification", notificationRoutes);
+app.use("/api/discounts", verifyToken, discountRoutes);
+
+app.use("/api/staff",verifyToken, staffRoutes);
+app.use("/api/customers",verifyToken, customerRoutes);
+app.use("/api/loyalty-rules",verifyToken, loyaltyRoutes);
+
+
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
 // Server listen
