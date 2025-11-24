@@ -5,10 +5,62 @@ import fs from "fs";
 import path from "path";
 
 /**
+ * Small helper: insert ledger entry and keep running balance per (tenant_id, account_type)
+ */
+async function insertLedgerEntry({
+  tenant_id,
+  account_type,
+  account_id = null,
+  entry_type,
+  description,
+  debit = 0,
+  credit = 0,
+  reference_id = null,
+}) {
+  // get last balance for this account_type
+  const { data: lastRows, error: lastErr } = await supabase
+    .from("ledger_entries")
+    .select("id, balance")
+    .eq("tenant_id", tenant_id)
+    .eq("account_type", account_type)
+    .order("created_at", { ascending: false })
+    .limit(1);
+
+  let prevBalance = 0;
+  if (!lastErr && lastRows && lastRows.length > 0) {
+    prevBalance = Number(lastRows[0].balance || 0);
+  }
+
+  const newBalance =
+    Number(prevBalance) + Number(debit || 0) - Number(credit || 0);
+
+  const { error: insertErr } = await supabase.from("ledger_entries").insert([
+    {
+      tenant_id,
+      account_type,
+      account_id,
+      entry_type,
+      description,
+      debit,
+      credit,
+      balance: newBalance,
+      reference_id,
+    },
+  ]);
+
+  if (insertErr) throw insertErr;
+}
+
+/**
  * Discount engine: applyDiscounts
  * Returns object with items (with discount_amount & net_price), totals and invoiceDiscounts list.
  */
-export async function applyDiscounts({ items, tenant_id, customer = null, couponCode = null }) {
+export async function applyDiscounts({
+  items,
+  tenant_id,
+  customer = null,
+  couponCode = null,
+}) {
   // fetch active discount rules for tenant
   const { data: rules = [], error: rulesErr } = await supabase
     .from("discount_rules")
@@ -18,18 +70,20 @@ export async function applyDiscounts({ items, tenant_id, customer = null, coupon
 
   if (rulesErr) throw rulesErr;
 
-  const itemRules = rules.filter(r => r.type === "item");
-  const billRules = rules.filter(r => r.type === "bill");
-  const couponRules = rules.filter(r => r.type === "coupon");
-  const tierRules = rules.filter(r => r.type === "tier");
+  const itemRules = rules.filter((r) => r.type === "item");
+  const billRules = rules.filter((r) => r.type === "bill");
+  const couponRules = rules.filter((r) => r.type === "coupon");
+  const tierRules = rules.filter((r) => r.type === "tier");
 
   // normalize items and compute base/tax
-  const workingItems = items.map(it => {
+  const workingItems = items.map((it) => {
     const price = parseFloat(it.price || 0);
     const qty = Number(it.qty || 0);
     const taxPercent = parseFloat(it.tax || 0);
     const lineBase = price * qty;
-    const taxAmount = parseFloat(((lineBase * taxPercent) / 100).toFixed(4));
+    const taxAmount = parseFloat(
+      ((lineBase * taxPercent) / 100).toFixed(4)
+    );
     const baseWithTax = parseFloat((lineBase + taxAmount).toFixed(4));
     return {
       ...it,
@@ -40,7 +94,7 @@ export async function applyDiscounts({ items, tenant_id, customer = null, coupon
       taxAmount,
       baseWithTax,
       discount_amount: 0,
-      net_price: baseWithTax
+      net_price: baseWithTax,
     };
   });
 
@@ -49,55 +103,78 @@ export async function applyDiscounts({ items, tenant_id, customer = null, coupon
   // 1) Apply item-level discounts (percent or flat per unit)
   for (const rule of itemRules) {
     for (const it of workingItems) {
-      if (rule.product_id && Number(rule.product_id) === Number(it.product_id)) {
+      if (
+        rule.product_id &&
+        Number(rule.product_id) === Number(it.product_id)
+      ) {
         let discount = 0;
         if (parseFloat(rule.discount_percent || 0) > 0) {
           // apply percent on line base + tax
-          discount = (it.baseWithTax * parseFloat(rule.discount_percent) / 100);
+          discount =
+            (it.baseWithTax * parseFloat(rule.discount_percent)) / 100;
         } else if (parseFloat(rule.discount_amount || 0) > 0) {
           // flat per unit * qty
           discount = parseFloat(rule.discount_amount) * it.qty;
         }
         // cap discount to not exceed baseWithTax
         discount = Math.max(0, Math.min(discount, it.baseWithTax));
-        it.discount_amount = parseFloat((it.discount_amount + discount).toFixed(2));
-        it.net_price = parseFloat((it.baseWithTax - it.discount_amount).toFixed(2));
+        it.discount_amount = parseFloat(
+          (it.discount_amount + discount).toFixed(2)
+        );
+        it.net_price = parseFloat(
+          (it.baseWithTax - it.discount_amount).toFixed(2)
+        );
       }
     }
   }
 
   // totals after item discounts
   const subtotal = workingItems.reduce((s, it) => s + it.baseWithTax, 0);
-  const item_discount_total = workingItems.reduce((s, it) => s + (it.discount_amount || 0), 0);
-  let total_after_item = parseFloat((subtotal - item_discount_total).toFixed(2));
+  const item_discount_total = workingItems.reduce(
+    (s, it) => s + (it.discount_amount || 0),
+    0
+  );
+  let total_after_item = parseFloat(
+    (subtotal - item_discount_total).toFixed(2)
+  );
 
   // 2) Bill-level discounts (can be multiple; percent or flat)
   let bill_discount_total = 0;
   for (const rule of billRules) {
     let amt = 0;
     if (parseFloat(rule.discount_percent || 0) > 0) {
-      amt = (total_after_item * parseFloat(rule.discount_percent) / 100);
+      amt =
+        (total_after_item * parseFloat(rule.discount_percent)) / 100;
     } else if (parseFloat(rule.discount_amount || 0) > 0) {
       amt = parseFloat(rule.discount_amount);
     }
     amt = Math.max(0, Math.min(amt, total_after_item - bill_discount_total));
     if (amt > 0) {
-      bill_discount_total = parseFloat((bill_discount_total + amt).toFixed(2));
+      bill_discount_total = parseFloat(
+        (bill_discount_total + amt).toFixed(2)
+      );
       invoiceDiscounts.push({
         rule_id: rule.id,
         amount: parseFloat(amt.toFixed(2)),
-        description: `Bill discount rule ${rule.id}`
+        description: `Bill discount rule ${rule.id}`,
       });
     }
   }
 
-  let total_after_bill = parseFloat((total_after_item - bill_discount_total).toFixed(2));
+  let total_after_bill = parseFloat(
+    (total_after_item - bill_discount_total).toFixed(2)
+  );
 
   // 3) Coupon (single) validation & apply
   let coupon_discount_total = 0;
   let appliedCouponRule = null;
   if (couponCode) {
-    const rule = couponRules.find(r => r.code && String(r.code).toLowerCase() === String(couponCode).toLowerCase());
+    const rule = couponRules.find(
+      (r) =>
+        r.code &&
+        String(r.code).toLowerCase() ===
+          String(couponCode).toLowerCase()
+    );
     if (!rule) throw new Error("Invalid coupon code");
 
     // min bill validation
@@ -107,17 +184,27 @@ export async function applyDiscounts({ items, tenant_id, customer = null, coupon
 
     // max uses check
     if (rule.max_uses) {
-      const { data: uses } = await supabase.from("coupon_usage").select("id").eq("coupon_id", rule.id);
-      if (uses && uses.length >= rule.max_uses) throw new Error("Coupon usage limit reached");
+      const { data: uses } = await supabase
+        .from("coupon_usage")
+        .select("id")
+        .eq("coupon_id", rule.id);
+      if (uses && uses.length >= rule.max_uses)
+        throw new Error("Coupon usage limit reached");
     }
-
-    // per-customer limit check will be applied later in controller where we know customer
 
     // apply coupon
     if (parseFloat(rule.discount_percent || 0) > 0) {
-      coupon_discount_total = parseFloat(((total_after_bill * parseFloat(rule.discount_percent) / 100)).toFixed(2));
+      coupon_discount_total = parseFloat(
+        (
+          (total_after_bill * parseFloat(rule.discount_percent)) /
+          100
+        ).toFixed(2)
+      );
     } else if (parseFloat(rule.discount_amount || 0) > 0) {
-      coupon_discount_total = Math.min(parseFloat(rule.discount_amount), total_after_bill);
+      coupon_discount_total = Math.min(
+        parseFloat(rule.discount_amount),
+        total_after_bill
+      );
     }
 
     if (coupon_discount_total > 0) {
@@ -125,40 +212,60 @@ export async function applyDiscounts({ items, tenant_id, customer = null, coupon
       invoiceDiscounts.push({
         rule_id: rule.id,
         amount: coupon_discount_total,
-        description: `Coupon ${rule.code}`
+        description: `Coupon ${rule.code}`,
       });
     }
   }
 
-  let total_after_coupon = parseFloat((total_after_bill - coupon_discount_total).toFixed(2));
+  let total_after_coupon = parseFloat(
+    (total_after_bill - coupon_discount_total).toFixed(2)
+  );
 
   // 4) Membership tier discount
   let membership_discount_total = 0;
   if (customer && customer.membership_tier) {
-    const tierRule = tierRules.find(tr => tr.tier && String(tr.tier).toLowerCase() === String(customer.membership_tier).toLowerCase());
+    const tierRule = tierRules.find(
+      (tr) =>
+        tr.tier &&
+        String(tr.tier).toLowerCase() ===
+          String(customer.membership_tier).toLowerCase()
+    );
     if (tierRule) {
       if (parseFloat(tierRule.discount_percent || 0) > 0) {
-        membership_discount_total = parseFloat(((total_after_coupon * parseFloat(tierRule.discount_percent) / 100)).toFixed(2));
+        membership_discount_total = parseFloat(
+          (
+            (total_after_coupon *
+              parseFloat(tierRule.discount_percent)) /
+            100
+          ).toFixed(2)
+        );
       } else if (parseFloat(tierRule.discount_amount || 0) > 0) {
-        membership_discount_total = Math.min(parseFloat(tierRule.discount_amount), total_after_coupon);
+        membership_discount_total = Math.min(
+          parseFloat(tierRule.discount_amount),
+          total_after_coupon
+        );
       }
       if (membership_discount_total > 0) {
         invoiceDiscounts.push({
           rule_id: tierRule.id,
           amount: membership_discount_total,
-          description: `Membership ${tierRule.tier} discount`
+          description: `Membership ${tierRule.tier} discount`,
         });
       }
     }
   }
 
-  const total_after_membership = parseFloat((total_after_coupon - membership_discount_total).toFixed(2));
+  const total_after_membership = parseFloat(
+    (total_after_coupon - membership_discount_total).toFixed(2)
+  );
 
   // final totals pre-redeem
-  const total_before_redeem = parseFloat(total_after_membership.toFixed(2));
+  const total_before_redeem = parseFloat(
+    total_after_membership.toFixed(2)
+  );
 
   return {
-    items: workingItems.map(it => ({
+    items: workingItems.map((it) => ({
       product_id: it.product_id,
       qty: it.qty,
       price: it.price,
@@ -166,47 +273,70 @@ export async function applyDiscounts({ items, tenant_id, customer = null, coupon
       lineBase: it.lineBase,
       taxAmount: it.taxAmount,
       baseWithTax: it.baseWithTax,
-      discount_amount: parseFloat((it.discount_amount || 0).toFixed(2)),
-      net_price: parseFloat((it.net_price || it.baseWithTax).toFixed(2))
+      discount_amount: parseFloat(
+        (it.discount_amount || 0).toFixed(2)
+      ),
+      net_price: parseFloat(
+        (it.net_price || it.baseWithTax).toFixed(2)
+      ),
     })),
     subtotal: parseFloat(subtotal.toFixed(2)),
     item_discount_total: parseFloat(item_discount_total.toFixed(2)),
     bill_discount_total: parseFloat(bill_discount_total.toFixed(2)),
-    coupon_discount_total: parseFloat(coupon_discount_total.toFixed(2)),
-    membership_discount_total: parseFloat(membership_discount_total.toFixed(2)),
+    coupon_discount_total: parseFloat(
+      coupon_discount_total.toFixed(2)
+    ),
+    membership_discount_total: parseFloat(
+      membership_discount_total.toFixed(2)
+    ),
     total_before_redeem,
     invoiceDiscounts,
-    appliedCouponRule
+    appliedCouponRule,
   };
 }
 
 /**
- * Full createInvoice (discounts + loyalty + inventory + invoice_items + invoice_discounts + coupon_usage)
+ * Full createInvoice (discounts + loyalty + inventory + invoice_items + invoice_discounts + coupon_usage + accounting)
  */
 export const createInvoice = async (req, res) => {
   try {
     const tenant_id = req.user.tenant_id;
-    const { items = [], payment_method = "cash", customer_id = null, redeem_points = 0, coupon_code = null } = req.body;
+    const {
+      items = [],
+      payment_method = "cash",
+      customer_id = null,
+      redeem_points = 0,
+      coupon_code = null,
+    } = req.body;
 
-    if (!items || items.length === 0) return res.status(400).json({ error: "No items provided" });
+    if (!items || items.length === 0)
+      return res.status(400).json({ error: "No items provided" });
 
     const isLoyaltyCustomer = !!customer_id;
     let customer = null;
     if (isLoyaltyCustomer) {
       const { data, error } = await supabase
         .from("customers")
-        .select("id, loyalty_points, lifetime_points, total_purchases, total_spent, membership_tier")
+        .select(
+          "id, loyalty_points, lifetime_points, total_purchases, total_spent, membership_tier"
+        )
         .eq("id", customer_id)
         .eq("tenant_id", tenant_id)
         .single();
-      if (error || !data) return res.status(404).json({ error: "Customer not found" });
+      if (error || !data)
+        return res.status(404).json({ error: "Customer not found" });
       customer = data;
     }
 
     // 1) Apply discounts
     let discountResult;
     try {
-      discountResult = await applyDiscounts({ items, tenant_id, customer, couponCode: coupon_code });
+      discountResult = await applyDiscounts({
+        items,
+        tenant_id,
+        customer,
+        couponCode: coupon_code,
+      });
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -220,20 +350,29 @@ export const createInvoice = async (req, res) => {
       membership_discount_total,
       total_before_redeem,
       invoiceDiscounts,
-      appliedCouponRule
+      appliedCouponRule,
     } = discountResult;
 
     let total_amount = total_before_redeem;
 
     // 2) Coupon per-customer limit validation (if coupon and customer)
-    if (appliedCouponRule && isLoyaltyCustomer && appliedCouponRule.per_customer_limit) {
+    if (
+      appliedCouponRule &&
+      isLoyaltyCustomer &&
+      appliedCouponRule.per_customer_limit
+    ) {
       const { data: usesByCustomer } = await supabase
         .from("coupon_usage")
         .select("id")
         .eq("coupon_id", appliedCouponRule.id)
         .eq("customer_id", customer_id);
-      if (usesByCustomer && usesByCustomer.length >= appliedCouponRule.per_customer_limit) {
-        return res.status(400).json({ error: "Coupon usage limit reached for this customer" });
+      if (
+        usesByCustomer &&
+        usesByCustomer.length >= appliedCouponRule.per_customer_limit
+      ) {
+        return res
+          .status(400)
+          .json({ error: "Coupon usage limit reached for this customer" });
       }
     }
 
@@ -242,19 +381,26 @@ export const createInvoice = async (req, res) => {
     let lifetimePoints = customer ? Number(customer.lifetime_points || 0) : 0;
 
     if (isLoyaltyCustomer && redeem_points > 0) {
-      if (redeem_points > currentPoints) return res.status(400).json({ error: "Not enough loyalty points" });
-      total_amount = parseFloat((total_amount - redeem_points).toFixed(2));
+      if (redeem_points > currentPoints)
+        return res
+          .status(400)
+          .json({ error: "Not enough loyalty points" });
+      total_amount = parseFloat(
+        (total_amount - redeem_points).toFixed(2)
+      );
       currentPoints -= redeem_points;
 
       // insert redeem transaction with invoice_id = null (attach later)
-      await supabase.from("loyalty_transactions").insert([{
-        customer_id,
-        invoice_id: null,
-        transaction_type: "redeem",
-        points: -redeem_points,
-        balance_after: currentPoints,
-        description: `Redeemed ${redeem_points} points`
-      }]);
+      await supabase.from("loyalty_transactions").insert([
+        {
+          customer_id,
+          invoice_id: null,
+          transaction_type: "redeem",
+          points: -redeem_points,
+          balance_after: currentPoints,
+          description: `Redeemed ${redeem_points} points`,
+        },
+      ]);
     }
 
     // ensure total_amount never negative
@@ -263,17 +409,19 @@ export const createInvoice = async (req, res) => {
     // 4) Create invoice with discount summary fields
     const { data: invoice, error: invoiceErr } = await supabase
       .from("invoices")
-      .insert([{
-        tenant_id,
-        customer_id: isLoyaltyCustomer ? customer_id : null,
-        total_amount,
-        payment_method,
-        item_discount_total,
-        bill_discount_total,
-        coupon_discount_total,
-        membership_discount_total,
-        final_amount: total_amount
-      }])
+      .insert([
+        {
+          tenant_id,
+          customer_id: isLoyaltyCustomer ? customer_id : null,
+          total_amount,
+          payment_method,
+          item_discount_total,
+          bill_discount_total,
+          coupon_discount_total,
+          membership_discount_total,
+          final_amount: total_amount,
+        },
+      ])
       .select()
       .single();
 
@@ -289,39 +437,44 @@ export const createInvoice = async (req, res) => {
     }
 
     // 6) Insert invoice_items with per-line discount & net_price
-const invoiceItemsToInsert = itemsWithDiscounts.map(it => ({
-  tenant_id,
-  invoice_id: invoice.id,
-  product_id: it.product_id,
-  quantity: it.qty,
-  price: it.price,
-  tax: it.tax,
-  discount_amount: it.discount_amount,   // REQUIRED for net_price generation
-  total: it.net_price                    // OR use baseWithTax if you prefer
-  // DO NOT include net_price (Postgres will auto-generate it)
-}));
+    const invoiceItemsToInsert = itemsWithDiscounts.map((it) => ({
+      tenant_id,
+      invoice_id: invoice.id,
+      product_id: it.product_id,
+      quantity: it.qty,
+      price: it.price,
+      tax: it.tax,
+      discount_amount: it.discount_amount, // REQUIRED for net_price generation
+      total: it.net_price, // OR use baseWithTax if you prefer
+      // DO NOT include net_price (Postgres will auto-generate it)
+    }));
 
-
-    const { error: itemsError } = await supabase.from("invoice_items").insert(invoiceItemsToInsert);
+    const { error: itemsError } = await supabase
+      .from("invoice_items")
+      .insert(invoiceItemsToInsert);
     if (itemsError) throw itemsError;
 
     // 7) Insert invoice-level discount rows (invoice_discounts)
     for (const invDisc of invoiceDiscounts) {
-      await supabase.from("invoice_discounts").insert([{
-        invoice_id: invoice.id,
-        rule_id: invDisc.rule_id,
-        amount: invDisc.amount,
-        description: invDisc.description
-      }]);
+      await supabase.from("invoice_discounts").insert([
+        {
+          invoice_id: invoice.id,
+          rule_id: invDisc.rule_id,
+          amount: invDisc.amount,
+          description: invDisc.description,
+        },
+      ]);
     }
 
     // 8) Record coupon usage (if coupon applied)
     if (appliedCouponRule) {
-      await supabase.from("coupon_usage").insert([{
-        customer_id: isLoyaltyCustomer ? customer_id : null,
-        coupon_id: appliedCouponRule.id,
-        invoice_id: invoice.id
-      }]);
+      await supabase.from("coupon_usage").insert([
+        {
+          customer_id: isLoyaltyCustomer ? customer_id : null,
+          coupon_id: appliedCouponRule.id,
+          invoice_id: invoice.id,
+        },
+      ]);
     }
 
     // 9) Update inventory
@@ -335,20 +488,33 @@ const invoiceItemsToInsert = itemsWithDiscounts.map(it => ({
         .single();
 
       if (!invData) {
-        await supabase.from("inventory").insert([{
-          tenant_id,
-          product_id: it.product_id,
-          quantity: 0,
-          reorder_level: 5,
-          max_stock: 100
-        }]);
+        await supabase.from("inventory").insert([
+          {
+            tenant_id,
+            product_id: it.product_id,
+            quantity: 0,
+            reorder_level: 5,
+            max_stock: 100,
+          },
+        ]);
         continue;
       }
 
-      const newQty = Math.max(0, Number(invData.quantity || 0) - it.qty);
-      await supabase.from("inventory").update({ quantity: newQty }).eq("id", invData.id).eq("tenant_id", tenant_id);
+      const newQty = Math.max(
+        0,
+        Number(invData.quantity || 0) - it.qty
+      );
+      await supabase
+        .from("inventory")
+        .update({ quantity: newQty })
+        .eq("id", invData.id)
+        .eq("tenant_id", tenant_id);
       if (newQty <= Number(invData.reorder_level || 0)) {
-        lowStockAlerts.push({ product_id: it.product_id, newQty, reorder_level: invData.reorder_level });
+        lowStockAlerts.push({
+          product_id: it.product_id,
+          newQty,
+          reorder_level: invData.reorder_level,
+        });
       }
     }
 
@@ -356,18 +522,27 @@ const invoiceItemsToInsert = itemsWithDiscounts.map(it => ({
     let earn_points = 0;
     if (isLoyaltyCustomer) {
       // fetch loyalty earning rule if exists
-    const { data: earnRule } = await supabase
-  .from("loyalty_rules")
-  .select("*")
-  .eq("tenant_id", tenant_id)
-  .eq("is_active", true)
-  .maybeSingle();
+      const { data: earnRule } = await supabase
+        .from("loyalty_rules")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("is_active", true)
+        .maybeSingle();
 
-
-      if (earnRule && earnRule.points_per_currency && earnRule.currency_unit) {
-        const currency_unit = parseFloat(earnRule.currency_unit || 100);
-        const points_per_currency = parseFloat(earnRule.points_per_currency || 1);
-        earn_points = Math.floor((total_amount / currency_unit) * points_per_currency);
+      if (
+        earnRule &&
+        earnRule.points_per_currency &&
+        earnRule.currency_unit
+      ) {
+        const currency_unit = parseFloat(
+          earnRule.currency_unit || 100
+        );
+        const points_per_currency = parseFloat(
+          earnRule.points_per_currency || 1
+        );
+        earn_points = Math.floor(
+          (total_amount / currency_unit) * points_per_currency
+        );
       } else {
         earn_points = Math.floor(total_amount / 100); // fallback
       }
@@ -376,85 +551,243 @@ const invoiceItemsToInsert = itemsWithDiscounts.map(it => ({
       lifetimePoints += earn_points;
 
       // update customer summary
-      await supabase.from("customers").update({
-        loyalty_points: currentPoints,
-        lifetime_points: lifetimePoints,
-        last_purchase_at: new Date(),
-        total_purchases: (customer.total_purchases || 0) + 1,
-        total_spent: (Number(customer.total_spent || 0) + total_amount)
-      }).eq("id", customer_id);
+      await supabase
+        .from("customers")
+        .update({
+          loyalty_points: currentPoints,
+          lifetime_points: lifetimePoints,
+          last_purchase_at: new Date(),
+          total_purchases: (customer.total_purchases || 0) + 1,
+          total_spent:
+            Number(customer.total_spent || 0) + total_amount,
+        })
+        .eq("id", customer_id);
 
       // insert loyalty earn transaction
-      await supabase.from("loyalty_transactions").insert([{
-        customer_id,
-        invoice_id: invoice.id,
-        transaction_type: "earn",
-        points: earn_points,
-        balance_after: currentPoints,
-        description: `Earned ${earn_points} points for invoice #${invoice.id}`
-      }]);
+      await supabase.from("loyalty_transactions").insert([
+        {
+          customer_id,
+          invoice_id: invoice.id,
+          transaction_type: "earn",
+          points: earn_points,
+          balance_after: currentPoints,
+          description: `Earned ${earn_points} points for invoice #${invoice.id}`,
+        },
+      ]);
     }
 
     // 11) Update invoice final_amount and totals (in DB) in case any rounding/changes needed
-    await supabase.from("invoices").update({
-      item_discount_total,
-      bill_discount_total,
-      coupon_discount_total,
-      membership_discount_total,
-      final_amount: total_amount
-    }).eq("id", invoice.id);
+    await supabase
+      .from("invoices")
+      .update({
+        item_discount_total,
+        bill_discount_total,
+        coupon_discount_total,
+        membership_discount_total,
+        final_amount: total_amount,
+      })
+      .eq("id", invoice.id);
+
+    // 12) ACCOUNTING: Daybook, Ledger, VAT
+    try {
+      const saleAmount = total_amount;
+      const saleDescription = `Invoice #${
+        invoice.invoice_number || invoice.id
+      }`;
+
+      // Daybook entry (Sale)
+      await supabase.from("daybook").insert([
+        {
+          tenant_id,
+          entry_type: "sale",
+          description: saleDescription,
+          debit: 0,
+          credit: saleAmount,
+          reference_id: invoice.id,
+        },
+      ]);
+
+      // Tax total from items
+      const totalTax = itemsWithDiscounts.reduce(
+        (s, it) => s + Number(it.taxAmount || 0),
+        0
+      );
+      const netSales = Math.max(0, saleAmount - totalTax);
+
+      // Ledger: Debit CASH / RECEIVABLE
+      const paymentAccountType =
+        payment_method === "credit" ? "receivable" : "cash";
+
+      await insertLedgerEntry({
+        tenant_id,
+        account_type: paymentAccountType,
+        account_id: payment_method === "credit" ? customer_id : null,
+        entry_type: "debit",
+        description: saleDescription,
+        debit: saleAmount,
+        credit: 0,
+        reference_id: invoice.id,
+      });
+
+      // Ledger: Credit SALES
+      if (netSales > 0) {
+        await insertLedgerEntry({
+          tenant_id,
+          account_type: "sales",
+          account_id: null,
+          entry_type: "credit",
+          description: saleDescription,
+          debit: 0,
+          credit: netSales,
+          reference_id: invoice.id,
+        });
+      }
+
+      // Ledger: Credit VAT PAYABLE
+      if (totalTax > 0) {
+        await insertLedgerEntry({
+          tenant_id,
+          account_type: "vat_payable",
+          account_id: null,
+          entry_type: "credit",
+          description: `VAT for ${saleDescription}`,
+          debit: 0,
+          credit: totalTax,
+          reference_id: invoice.id,
+        });
+      }
+
+      // VAT REPORT (monthly, period = YYYY-MM)
+      const now = invoice.created_at
+        ? new Date(invoice.created_at)
+        : new Date();
+      const period = `${now.getFullYear()}-${String(
+        now.getMonth() + 1
+      ).padStart(2, "0")}`;
+
+      const { data: existingVat, error: vatErr } = await supabase
+        .from("vat_reports")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("period", period)
+        .maybeSingle();
+
+      if (vatErr) {
+        console.error("VAT fetch error:", vatErr);
+      } else if (existingVat) {
+        const newTotalSales =
+          Number(existingVat.total_sales || 0) +
+          Number(saleAmount || 0);
+        const newSalesVat =
+          Number(existingVat.sales_vat || 0) +
+          Number(totalTax || 0);
+        const newTotalPurchases = Number(
+          existingVat.total_purchases || 0
+        );
+        const newPurchaseVat = Number(
+          existingVat.purchase_vat || 0
+        );
+        const newVatPayable = newSalesVat - newPurchaseVat;
+
+        const { error: updateVatErr } = await supabase
+          .from("vat_reports")
+          .update({
+            total_sales: newTotalSales,
+            sales_vat: newSalesVat,
+            vat_payable: newVatPayable,
+          })
+          .eq("id", existingVat.id);
+
+        if (updateVatErr) {
+          console.error("VAT update error:", updateVatErr);
+        }
+      } else {
+        const { error: insertVatErr } = await supabase
+          .from("vat_reports")
+          .insert([
+            {
+              tenant_id,
+              period,
+              total_sales: saleAmount,
+              sales_vat: totalTax,
+              total_purchases: 0,
+              purchase_vat: 0,
+              vat_payable: totalTax,
+            },
+          ]);
+        if (insertVatErr) {
+          console.error("VAT insert error:", insertVatErr);
+        }
+      }
+    } catch (accErr) {
+      console.error("Accounting entries failed:", accErr);
+      // we don't fail the invoice if accounting tables fail
+    }
+
+    // 13) Fetch product names and merge into items
+    const productIds = [
+      ...new Set(invoiceItemsToInsert.map((i) => i.product_id)),
+    ];
+
+    const { data: productData, error: prodErr } = await supabase
+      .from("products")
+      .select("id, name")
+      .in("id", productIds);
+
+    if (prodErr) throw prodErr;
+
+    const productMap = {};
+    productData.forEach((p) => {
+      productMap[p.id] = p.name;
+    });
+
+    const itemsWithNames = invoiceItemsToInsert.map((it) => ({
+      ...it,
+      name: productMap[it.product_id] || "Unknown",
+    }));
 
     // Final response
-  // 12) Fetch product names and merge into items
-const productIds = [...new Set(invoiceItemsToInsert.map(i => i.product_id))];
-
-const { data: productData, error: prodErr } = await supabase
-  .from("products")
-  .select("id, name")
-  .in("id", productIds);
-
-if (prodErr) throw prodErr;
-
-const productMap = {};
-productData.forEach(p => {
-  productMap[p.id] = p.name;
-});
-
-const itemsWithNames = invoiceItemsToInsert.map(it => ({
-  ...it,
-  name: productMap[it.product_id] || "Unknown"
-}));
-
-// 13) Return final response
-return res.status(201).json({
-  message: "Invoice created successfully",
-  invoice,
-  items: itemsWithNames,
-  lowStockAlerts,
-  loyalty: isLoyaltyCustomer
-    ? { earned: earn_points, redeemed: redeem_points, final_balance: currentPoints }
-    : null
-});
-
-
+    return res.status(201).json({
+      message: "Invoice created successfully",
+      invoice,
+      items: itemsWithNames,
+      lowStockAlerts,
+      loyalty: isLoyaltyCustomer
+        ? {
+            earned: earn_points,
+            redeemed: redeem_points,
+            final_balance: currentPoints,
+          }
+        : null,
+    });
   } catch (err) {
     console.error("createInvoice error:", err);
-    return res.status(500).json({ error: err.message || "Server error" });
+    return res
+      .status(500)
+      .json({ error: err.message || "Server error" });
   }
 };
-
 
 /**
  * generatePDF (unchanged)
  */
 export const generatePDF = async (req, res) => {
   try {
-    const { invoiceNumber, items, subtotal, total, payment_method } = req.body;
+    const {
+      invoiceNumber,
+      items,
+      subtotal,
+      total,
+      payment_method,
+    } = req.body;
 
     const invoicesDir = path.join(process.cwd(), "invoices");
     if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir);
 
-    const filePath = path.join(invoicesDir, `invoice-${invoiceNumber}.pdf`);
+    const filePath = path.join(
+      invoicesDir,
+      `invoice-${invoiceNumber}.pdf`
+    );
     const doc = new PDFDocument({ margin: 40 });
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
@@ -463,21 +796,33 @@ export const generatePDF = async (req, res) => {
     doc.fontSize(10).text(`Invoice No: ${invoiceNumber}`);
     doc.text(`Date: ${new Date().toLocaleString()}`);
     doc.moveDown(1);
-    doc.text("========================================", { align: "center" });
+    doc.text("========================================", {
+      align: "center",
+    });
 
     items.forEach((item) => {
-      doc.text(`${item.qty}x ${item.name} - AED ${item.total.toFixed(2)}`);
+      doc.text(
+        `${item.qty}x ${item.name} - AED ${item.total.toFixed(2)}`
+      );
     });
 
     doc.moveDown(1);
-    doc.text("========================================", { align: "center" });
+    doc.text("========================================", {
+      align: "center",
+    });
 
     doc.text(`Subtotal: AED ${subtotal.toFixed(2)}`);
     doc.text(`Payment Method: ${payment_method}`);
-    doc.fontSize(14).text(`Total: AED ${total.toFixed(2)}`, { align: "right" });
+    doc
+      .fontSize(14)
+      .text(`Total: AED ${total.toFixed(2)}`, { align: "right" });
 
     doc.moveDown(1.5);
-    doc.fontSize(10).text("Thank you for shopping with us!", { align: "center" });
+    doc
+      .fontSize(10)
+      .text("Thank you for shopping with us!", {
+        align: "center",
+      });
 
     doc.end();
 
@@ -489,6 +834,8 @@ export const generatePDF = async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to generate invoice PDF" });
+    res
+      .status(500)
+      .json({ error: "Failed to generate invoice PDF" });
   }
 };
