@@ -32,6 +32,8 @@ import customerRoutes from "./routes/customerRoutes.js";
 import loyaltyRoutes from "./routes/loyaltyRoutes.js";
 import discountRoutes from "./routes/discountRoutes.js";
 import accountsRoutes from "./routes/accountsRoutes.js";
+import purchaseReturnsRouter from "./routes/returnPurchaseRouter.js";
+import salesReturnsRouter from "./routes/returnSalesRoter.js";
 
 const app = express();
 
@@ -92,6 +94,8 @@ app.use("/api/suppliers", supplierRoutes);
 app.use("/api/invoices", verifyToken, invoiceRoutes);
 app.use("/api/notification", notificationRoutes);
 app.use("/api/discounts", verifyToken, discountRoutes);
+app.use("/api/purchase_returns", verifyToken, purchaseReturnsRouter);
+app.use("/api/sales_returns", verifyToken, salesReturnsRouter);
 
 app.use("/api/staff",verifyToken, staffRoutes);
 app.use("/api/customers",verifyToken, customerRoutes);
