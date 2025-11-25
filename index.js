@@ -18,6 +18,7 @@ import { requireRole } from "./middleware/requireRole.js";
 import subscriberRoutes from "./routes/subscriber.js";
 import amcRoutes from "./routes/amc.js";
 import reportRoutes from "./routes/reportRouter.js";
+import tenantReportRoutes from "./routes/tenantReport.js";
 import billingRoutes from "./routes/billingRoutes.js";
 import purchaseRoutes from "./routes/purchaseRoutes.js";
 import supplierRoutes from "./routes/supplierRoutes.js";
@@ -80,6 +81,7 @@ app.use("/api/products", product);
 app.use("/api/subscriber", subscriberRoutes);
 app.use("/api/amc", amcRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/reports/tenant", tenantReportRoutes);
 app.use("/api/users", usersRouter);
 app.use("/api/settings", verifyToken, settingsRouter);
 app.use("/api/plans", plansRouter);
@@ -97,11 +99,10 @@ app.use("/api/discounts", verifyToken, discountRoutes);
 app.use("/api/purchase_returns", verifyToken, purchaseReturnsRouter);
 app.use("/api/sales_returns", verifyToken, salesReturnsRouter);
 
-app.use("/api/staff",verifyToken, staffRoutes);
-app.use("/api/customers",verifyToken, customerRoutes);
-app.use("/api/loyalty-rules",verifyToken, loyaltyRoutes);
-app.use("/api/accounts",verifyToken, accountsRoutes);
-
+app.use("/api/staff", verifyToken, staffRoutes);
+app.use("/api/customers", verifyToken, customerRoutes);
+app.use("/api/loyalty-rules", verifyToken, loyaltyRoutes);
+app.use("/api/accounts", verifyToken, accountsRoutes);
 
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
