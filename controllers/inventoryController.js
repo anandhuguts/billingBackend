@@ -6,21 +6,30 @@ export const createInventory = async (req, res) => {
 
   try {
     const tenant_id = req.user.tenant_id;
-    const { product_id, quantity = 0, expiry_date, max_stock, reorder_level = 0 } = req.body;
+    const {
+      product_id,
+      quantity = 0,
+      expiry_date,
+      max_stock,
+      reorder_level = 0,
+    } = req.body;
 
-    if (!product_id) return res.status(400).json({ error: "product_id required" });
+    if (!product_id)
+      return res.status(400).json({ error: "product_id required" });
 
     const { data, error } = await supabase
       .from("inventory")
-      .insert([{
-        tenant_id,
-        product_id,
-        quantity,
-        reorder_level,
-        expiry_date,
-        max_stock
-        // Remove cost_price and selling_price from here
-      }])
+      .insert([
+        {
+          tenant_id,
+          product_id,
+          quantity,
+          reorder_level,
+          expiry_date,
+          max_stock,
+          // Remove cost_price and selling_price from here
+        },
+      ])
       .select()
       .single();
 
@@ -40,7 +49,8 @@ export const getInventory = async (req, res) => {
 
     let q = supabase
       .from("inventory")
-      .select(`
+      .select(
+        `
         id,
         quantity,
         reorder_level,
@@ -57,13 +67,14 @@ export const getInventory = async (req, res) => {
           unit,
           cost_price,
           selling_price,
-          tax_percent,
+          tax,
           barcode,
           sku
           
           
         )
-      `)
+      `
+      )
       .eq("tenant_id", tenant_id)
       .order("updated_at", { ascending: false })
       .range(Number(offset), Number(offset) + Number(limit) - 1);
@@ -77,17 +88,16 @@ export const getInventory = async (req, res) => {
     if (error) throw error;
 
     // 🧩 Flatten joined data so it matches your frontend object structure
-    const formatted = data.map(item => ({
-    id: item.id, // rename to avoid confusion
-  product_id: item.product_id, // ✅ keep original
-  quantity: item.quantity,
-  reorderLevel: item.reorder_level,
-  updatedAt: item.updated_at,
-  expiryDate: item.expiry_date,
-  maxStock: item.max_stock,
-  ...item.products
-}));
-
+    const formatted = data.map((item) => ({
+      id: item.id, // rename to avoid confusion
+      product_id: item.product_id, // ✅ keep original
+      quantity: item.quantity,
+      reorderLevel: item.reorder_level,
+      updatedAt: item.updated_at,
+      expiryDate: item.expiry_date,
+      maxStock: item.max_stock,
+      ...item.products,
+    }));
 
     return res.json({ data: formatted });
   } catch (err) {
@@ -95,7 +105,6 @@ export const getInventory = async (req, res) => {
     return res.status(500).json({ error: err.message || "Server error" });
   }
 };
-
 
 // Update inventory (only for items belonging to tenant)
 export const updateInventory = async (req, res) => {

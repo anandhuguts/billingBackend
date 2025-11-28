@@ -1,7 +1,6 @@
 import { supabase } from "../supabase/supabaseClient.js";
 
 export const CustomerController = {
-
   /* ======================================================
      GET ALL CUSTOMERS (TENANT-BASED)
   ====================================================== */
@@ -18,7 +17,6 @@ export const CustomerController = {
       if (error) throw error;
 
       return res.json({ success: true, data });
-
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -50,7 +48,7 @@ export const CustomerController = {
             phone,
             email,
             tenant_id,
-          }
+          },
         ])
         .select("*")
         .single();
@@ -69,7 +67,6 @@ export const CustomerController = {
         message: "Customer created successfully",
         data,
       });
-
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -92,7 +89,6 @@ export const CustomerController = {
       if (error) throw error;
 
       return res.json({ success: true, data });
-
     } catch (error) {
       return res.status(404).json({ error: "Customer not found" });
     }
@@ -135,7 +131,6 @@ export const CustomerController = {
         message: "Customer updated successfully",
         data,
       });
-
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -160,7 +155,6 @@ export const CustomerController = {
         success: true,
         message: "Customer deleted",
       });
-
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
@@ -183,7 +177,6 @@ export const CustomerController = {
       if (error) throw error;
 
       return res.json({ success: true, data });
-
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }

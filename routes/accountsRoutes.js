@@ -1,20 +1,20 @@
 import express from "express";
-import { DaybookController } from "../controllers/daybookController.js";
-import { LedgerController } from "../controllers/ledgerController.js";
-import { VatController } from "../controllers/vatController.js";
+import {
+  getDaybook,
+  getLedger,
+  getTrialBalance,
+  getBalanceSheet,
+  getVATReport,
+  getProfitAndLoss,
+} from "../controllers/accountsController.js";
 
 const router = express.Router();
 
-/* -------------------- DAYBOOK -------------------- */
-router.get("/daybook", DaybookController.getAll);
-router.post("/daybook", DaybookController.create);
-
-/* -------------------- LEDGER -------------------- */
-router.get("/ledger", LedgerController.getAll);
-router.get("/ledger/:account_id", LedgerController.getByAccount);
-
-/* -------------------- VAT REPORT -------------------- */
-router.get("/vat", VatController.getAll);
-router.post("/vat/generate", VatController.generateForMonth);
+router.get("/daybook", getDaybook);
+router.get("/ledger", getLedger);
+router.get("/trial-balance", getTrialBalance);
+router.get("/balance-sheet", getBalanceSheet);
+router.get("/vat", getVATReport);
+router.get("/pal", getProfitAndLoss);
 
 export default router;
