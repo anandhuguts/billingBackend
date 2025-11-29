@@ -1,5 +1,5 @@
 import { supabase } from "../supabase/supabaseClient.js";
-
+import { getNextPurchaseSequence } from "../utils/getNextPurchaseSequence.js";
 // ===========================
 // ACCOUNTING HELPERS
 // ===========================
@@ -296,45 +296,34 @@ export const createPurchase = async (req, res) => {
     const total_amount = Number((netTotal + taxTotal).toFixed(2));
 
     // 3️⃣ Auto-generate invoice number
-    let invoice_number = clientInvoiceNumber;
 
-    if (!invoice_number) {
-      const { data: lastPurchase } = await supabase
-        .from("purchases")
-        .select("invoice_number")
-        .eq("tenant_id", tenant_id)
-        .order("id", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      let nextNumber = 1;
-      if (lastPurchase?.invoice_number) {
-        const match = lastPurchase.invoice_number.match(/(\d+)$/);
-        if (match) {
-          nextNumber = parseInt(match[1], 10) + 1;
-        }
-      }
-
-      const year = new Date().getFullYear();
-      invoice_number = `PUR-${year}-${String(nextNumber).padStart(4, "0")}`;
-    }
-
+    const seq = await getNextPurchaseSequence(tenant_id);
+    const year = new Date().getFullYear();
+    const invoice_number = `PUR-${year}-${String(seq).padStart(4, "0")}`;
     // 4️⃣ Insert purchase
+
+    // 4️⃣ Insert purchase WITHOUT invoice_number first
     const { data: purchase, error: purchaseErr } = await supabase
       .from("purchases")
       .insert([
         {
           tenant_id,
           supplier_id,
-          invoice_number,
           total_amount,
         },
       ])
-      .select("id, created_at, invoice_number")
+      .select("id, created_at")
       .single();
 
     if (purchaseErr) throw purchaseErr;
+
     const purchase_id = purchase.id;
+
+    // 4.1️⃣ Now update invoice_number using sequence
+    await supabase
+      .from("purchases")
+      .update({ invoice_number })
+      .eq("id", purchase_id);
 
     // 5️⃣ Insert purchase_items
     const purchaseItemsData = normalizedItems.map((item) => ({

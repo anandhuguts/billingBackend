@@ -5,6 +5,7 @@ export const createSupplier = async (req, res) => {
   try {
     const tenant_id = req.user?.tenant_id;
     if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
+    console.log(req.body);
 
     const {
       name,
@@ -14,7 +15,8 @@ export const createSupplier = async (req, res) => {
       address = "",
     } = req.body;
 
-    if (!name) return res.status(400).json({ error: "Supplier name is required" });
+    if (!name)
+      return res.status(400).json({ error: "Supplier name is required" });
 
     const { data, error } = await supabase
       .from("suppliers")

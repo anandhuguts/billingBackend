@@ -478,6 +478,33 @@ export const createInvoice = async (req, res) => {
     if (total_amount < 0) total_amount = 0;
 
     // 4) Create invoice with discount summary fields
+    // 3.1) Generate per-tenant sales invoice sequence
+    const { data: counter } = await supabase
+      .from("tenant_counters")
+      .select("sales_seq")
+      .eq("tenant_id", tenant_id)
+      .maybeSingle();
+
+    let seq = 1;
+
+    if (!counter) {
+      // first invoice for this tenant
+      await supabase
+        .from("tenant_counters")
+        .insert([{ tenant_id, sales_seq: 1 }]);
+    } else {
+      seq = counter.sales_seq + 1;
+      await supabase
+        .from("tenant_counters")
+        .update({ sales_seq: seq })
+        .eq("tenant_id", tenant_id);
+    }
+
+    // Generate invoice number format: INV-2025-0001
+    const year = new Date().getFullYear();
+    const invoice_number = `INV-${year}-${String(seq).padStart(4, "0")}`;
+
+    // 4) Insert invoice WITHOUT invoice_number first
     const { data: invoice, error: invoiceErr } = await supabase
       .from("invoices")
       .insert([
@@ -494,10 +521,16 @@ export const createInvoice = async (req, res) => {
           final_amount: total_amount,
         },
       ])
-      .select()
+      .select("id, created_at")
       .single();
 
     if (invoiceErr) throw invoiceErr;
+
+    // 4.1) Now attach the invoice_number
+    await supabase
+      .from("invoices")
+      .update({ invoice_number })
+      .eq("id", invoice.id);
 
     // 5) Attach invoice_id to earlier redeem transactions
     if (isLoyaltyCustomer && redeem_points > 0) {

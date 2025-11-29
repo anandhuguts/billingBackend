@@ -1,5 +1,6 @@
 import { supabase } from "../supabase/supabaseClient.js";
 import bcrypt from "bcrypt";
+import { createDefaultCoaForTenant } from "../utils/createDefaultCoaForTenant.js";
 
 // Helper: Calculate AMC expiration information
 const calculateAMCInfo = (amc) => {
@@ -122,6 +123,8 @@ export const createTenant = async (req, res) => {
     // Get the created tenant with its auto-generated ID
     const createdTenant = tenantData[0];
     console.log("Tenant created with ID:", createdTenant.id);
+    // Create default COA for this tenant
+    await createDefaultCoaForTenant(createdTenant.id);
 
     // --- Auto-create an initial payment record based on selected plan ---
     // Assumption: initial payment amount uses monthly rates per plan.
@@ -395,8 +398,6 @@ export const deleteTenant = async (req, res) => {
       console.warn("Unexpected error deleting users for tenant", id, e);
     }
 
-
-
     // Finally delete the tenant row
     const { data, error } = await supabase
       .from("tenants")
@@ -412,7 +413,6 @@ export const deleteTenant = async (req, res) => {
       tenant: data[0],
       deleted: {
         users: deletedUsers.length,
-        
       },
     });
   } catch (err) {
