@@ -3,7 +3,7 @@ import { supabase } from "../supabase/supabaseClient.js";
 /*
 Updated columns (from your screenshot):
 - id (int8, PK)
-- tenat_id (uuid) — note typo in DB, keep as-is
+- tenant_id (uuid) — note typo in DB, keep as-is
 - created_at (timestamptz)
 - sales_id (varchar)
 - refund_type (text)
@@ -16,7 +16,7 @@ Updated columns (from your screenshot):
 // GET /api/sales_returns (filtered by tenant if user is not super_admin)
 export const getAllSalesReturns = async (req, res) => {
   try {
-    const { sales_id } = req.query;
+    const { sales_id, invoice_id } = req.query;
     let q = supabase
       .from("sales_returns")
       .select("*")
@@ -24,10 +24,15 @@ export const getAllSalesReturns = async (req, res) => {
 
     // Tenant isolation: if not super_admin, filter by user's tenant
     if (req.user.role !== "super_admin" && req.user.tenant_id) {
-      q = q.eq("tenat_id", req.user.tenant_id); // note DB column spelling
+      q = q.eq("tenant_id", req.user.tenant_id); // note DB column spelling
     }
 
-    if (sales_id) q = q.eq("sales_id", sales_id);
+    // Support either legacy sales_id or new invoice_id column
+    if (invoice_id) {
+      q = q.eq("invoice_id", invoice_id);
+    } else if (sales_id) {
+      q = q.eq("sales_id", sales_id);
+    }
 
     const { data, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
@@ -46,7 +51,7 @@ export const getSalesReturnById = async (req, res) => {
 
     // Tenant isolation
     if (req.user.role !== "super_admin" && req.user.tenant_id) {
-      q = q.eq("tenat_id", req.user.tenant_id);
+      q = q.eq("tenant_id", req.user.tenant_id);
     }
 
     const { data, error } = await q.maybeSingle();
@@ -63,41 +68,46 @@ export const getSalesReturnById = async (req, res) => {
 export const createSalesReturn = async (req, res) => {
   try {
     const {
-      sales_id,
+       // legacy
+      invoice_id, // new name
       refund_type,
-      return_iteam, // frontend should match DB column name
       quantity,
       reason,
       product_id,
-      total_refund
+      total_refund,
     } = req.body;
 
-    // Validation
-    if (!sales_id || !quantity || !product_id || !total_refund) {
-      return res
-        .status(400)
-        .json({ error: "sales_id, quantity, product_id, and total_refund are required" });
+    // Determine which identifier is provided
+    const idValue = invoice_id || sales_id;
+    const idColumn = invoice_id ? "invoice_id" : "sales_id";
+
+    if (!idValue || !quantity || !product_id || !total_refund) {
+      return res.status(400).json({
+        error: `${idColumn}, quantity, product_id, and total_refund are required`,
+      });
     }
 
     // Use authenticated user's tenant (unless super_admin provides one)
-    const tenat_id =
-      req.user.role === "super_admin" && req.body.tenat_id
-        ? req.body.tenat_id
+    const tenant_id =
+      req.user.role === "super_admin" && req.body.tenant_id
+        ? req.body.tenant_id
         : req.user.tenant_id;
 
-    if (!tenat_id) {
+    if (!tenant_id) {
       return res.status(400).json({ error: "tenant_id is required" });
     }
 
+    // Resolve return item column name
+    // keep DB compatibility
+
     const payload = {
-      tenat_id, // DB column name
-      sales_id,
+      tenant_id,
+      [idColumn]: idValue,
       refund_type: refund_type ?? null,
-      return_iteam: return_iteam ?? null, // DB column name
       quantity,
       reason: reason ?? null,
       product_id,
-      total_refund
+      total_refund,
     };
 
     const { data, error } = await supabase
@@ -113,14 +123,14 @@ export const createSalesReturn = async (req, res) => {
       const { data: existing, error: existErr } = await supabase
         .from("inventory")
         .select("id, quantity, reorder_level")
-        .eq("tenant_id", tenat_id)
+        .eq("tenant_id", tenant_id)
         .eq("product_id", product_id)
         .maybeSingle();
       if (existErr) throw existErr;
 
       if (!existing) {
         console.warn(
-          `No inventory record found for tenant ${tenat_id}, product ${product_id}`
+          `No inventory record found for tenant ${tenant_id}, product ${product_id}`
         );
         return res.status(404).json({
           error:
@@ -141,9 +151,17 @@ export const createSalesReturn = async (req, res) => {
       console.error("Inventory increment failed (sales return)", invErr);
     }
 
-    res
-      .status(201)
-      .json({ sales_return: data[0], inventory: updatedInventory });
+    // Normalize response key to always expose invoice_id if present else sales_id
+    const record = data[0];
+    if (
+      record &&
+      !record.invoice_id &&
+      idColumn === "invoice_id"
+    ) {
+      // DB didn't have invoice_id column; reflect legacy field
+      record.invoice_id = record.sales_id;
+    }
+    res.status(201).json({ sales_return: record, inventory: updatedInventory });
   } catch (err) {
     console.error("createSalesReturn error", err);
     res.status(500).json({ error: "Internal server error" });
@@ -157,8 +175,8 @@ export const updateSalesReturn = async (req, res) => {
     const updates = { ...req.body };
 
     // Prevent changing tenant unless super_admin
-    if (updates.tenat_id && req.user.role !== "super_admin") {
-      delete updates.tenat_id;
+    if (updates.tenant_id && req.user.role !== "super_admin") {
+      delete updates.tenant_id;
     }
 
     if (!Object.keys(updates).length) {
@@ -169,7 +187,7 @@ export const updateSalesReturn = async (req, res) => {
 
     // Tenant isolation for non-super-admins
     if (req.user.role !== "super_admin" && req.user.tenant_id) {
-      q = q.eq("tenat_id", req.user.tenant_id);
+      q = q.eq("tenant_id", req.user.tenant_id);
     }
 
     const { data, error } = await q.select();
@@ -193,7 +211,7 @@ export const deleteSalesReturn = async (req, res) => {
 
     // Tenant isolation
     if (req.user.role !== "super_admin" && req.user.tenant_id) {
-      q = q.eq("tenat_id", req.user.tenant_id);
+      q = q.eq("tenant_id", req.user.tenant_id);
     }
 
     const { data, error } = await q.select();

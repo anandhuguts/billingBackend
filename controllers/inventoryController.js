@@ -57,7 +57,6 @@ export const getInventory = async (req, res) => {
           unit,
           cost_price,
           selling_price,
-          tax_percent,
           barcode,
           sku
           

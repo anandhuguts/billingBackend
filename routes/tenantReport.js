@@ -7,4 +7,5 @@ const router = express.Router();
 // GET / -> timeseries report for tenant
 router.get("/", verifyToken, tenantReportController.getTenantReport);
 
+
 export default router;

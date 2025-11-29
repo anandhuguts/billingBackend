@@ -134,7 +134,7 @@ export const getAMCById = async (req, res) => {
 
 // CREATE a new AMC record
 // Purpose: Insert a new annual maintenance contract into the database
-// Expected body: { client_name, plan, start_date, end_date, status, amount, billing_frequency, tenat_amcid }
+// Expected body: { client_name, plan, start_date, end_date, status, amount, billing_frequency, tenant_id }
 // Returns: the inserted AMC record or an error
 export const createAMC = async (req, res) => {
   // Extract expected fields from request body
@@ -146,7 +146,7 @@ export const createAMC = async (req, res) => {
     status = true, // default status to true (active) if not provided
     amount,
     billing_frequency = null,
-    tenat_amcid = null, // Foreign key to tenants table
+    tenant_id = null, // Foreign key to tenants table
   } = req.body || {};
 
   // Basic validation: required fields
@@ -165,7 +165,7 @@ export const createAMC = async (req, res) => {
   }
 
   // Normalize tenant foreign key UUID if provided
-  const cleanedTenantId = tenat_amcid ? normalizeUuid(tenat_amcid) : null;
+  const cleanedTenantId = tenant_id ? normalizeUuid(tenant_id) : null;
 
   try {
     // Insert the record into Supabase `amc` table
@@ -180,7 +180,7 @@ export const createAMC = async (req, res) => {
           status,
           amount: amount ? Number(amount) : null,
           billing_frequency,
-          tenat_amcid: cleanedTenantId,
+          tenant_id: cleanedTenantId,
         },
       ])
       .select(); // Return the inserted row
@@ -225,7 +225,7 @@ export const updateAMC = async (req, res) => {
     status,
     amount,
     billing_frequency,
-    tenat_amcid,
+    tenant_id,
   } = req.body || {};
 
   // Build update object dynamically (only include provided fields)
@@ -246,8 +246,8 @@ export const updateAMC = async (req, res) => {
     updateData.billing_frequency = billing_frequency;
 
   // Handle tenant foreign key update with UUID normalization
-  if (tenat_amcid !== undefined) {
-    updateData.tenat_amcid = tenat_amcid ? normalizeUuid(tenat_amcid) : null;
+  if (tenant_id !== undefined) {
+    updateData.tenant_id = tenant_id ? normalizeUuid(tenant_id) : null;
   }
 
   // Check if there's anything to update
