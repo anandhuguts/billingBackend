@@ -243,11 +243,43 @@ export const createPurchaseReturn = async (req, res) => {
     }
 
     // Prevent returning more than purchased (basic check)
-    if (qty > Number(purchaseItem.quantity)) {
-      return res
-        .status(400)
-        .json({ error: "Cannot return more than purchased quantity" });
-    }
+  /* =========================
+   2B) Validate remaining returnable quantity
+========================= */
+
+// A) Purchased qty
+const purchasedQty = Number(purchaseItem.quantity);
+
+// B) Total returned qty so far
+const { data: prevReturns, error: prevErr } = await supabase
+  .from("purchase_returns")
+  .select("quantity")
+  .eq("tenant_id", tenant_id)
+  .eq("purchase_id", purchase_id)
+  .eq("product_id", product_id);
+
+if (prevErr) throw prevErr;
+
+const returnedQty = prevReturns?.reduce(
+  (sum, r) => sum + Number(r.quantity || 0),
+  0
+) || 0;
+
+// C) Remaining qty allowed
+const remainingQty = purchasedQty - returnedQty;
+
+// D) Validations
+if (remainingQty <= 0) {
+  return res.status(400).json({
+    error: "All purchased quantity for this product has already been returned",
+  });
+}
+
+if (qty > remainingQty) {
+  return res.status(400).json({
+    error: `Only ${remainingQty} units can be returned for this product`,
+  });
+}
 
     const unitCost = Number(purchaseItem.cost_price);
     const taxRate = Number(product.tax || 0);

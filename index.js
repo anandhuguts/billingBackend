@@ -4,17 +4,18 @@ dotenv.config();
 import express from "express";
 import cors from "cors";
 import path from "path";
-import { fileURLToPath } from "url"; // ✅ Needed to use __dirname with ES modules
+import { fileURLToPath } from "url";
 
-// Import routes
+import { verifyToken } from "./middleware/verifyToken.js";
+import { requireRole } from "./middleware/requireRole.js";
+
+// ROUTES
 import tenantsRoutes from "./routes/tenants.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import modulesRoutes from "./routes/modules.js";
 import authRoutes from "./routes/authRoutes.js";
 import inventory from "./routes/inventoryRoutes.js";
 import product from "./routes/productRoutes.js";
-import { verifyToken } from "./middleware/verifyToken.js";
-import { requireRole } from "./middleware/requireRole.js";
 import subscriberRoutes from "./routes/subscriber.js";
 import amcRoutes from "./routes/amc.js";
 import reportRoutes from "./routes/reportRouter.js";
@@ -34,77 +35,159 @@ import discountRoutes from "./routes/discountRoutes.js";
 import accountsRoutes from "./routes/accountsRoutes.js";
 import purchaseReturnsRouter from "./routes/returnPurchaseRouter.js";
 import salesReturnsRouter from "./routes/returnSalesRoter.js";
+import reportRoutesTenant from "./routes/reportsDynamicRoutes.js";
 
 const app = express();
 
-// ✅ Fix __dirname in ES modules
+// Fix __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ✅ Serve the generated invoices folder
+// Serve invoices
 app.use("/invoices", express.static(path.join(__dirname, "invoices")));
 
-// Configure CORS with sensible defaults
+// CORS
 const allowedOrigins = [
   "https://tenant-sphere.vercel.app",
   "http://localhost:8080",
 ];
 
-const corsOptions = {
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ["GET", "POST", "PUT", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
-  exposedHeaders: ["Content-Disposition", "Content-Length", "Content-Type"],
-  credentials: true, // since you're verifying tokens
-};
+  credentials: true
+}));
 
-app.use(cors(corsOptions));
 app.use(express.json());
 
-// Routes
-// Tenant management should be admin-only. Protect it server-side so
-// changing client-side values can't grant access.
-app.use("/api/tenants", verifyToken, tenantsRoutes);
-//app.use("/api/tenants", verifyToken, requireRole("super_admin"), tenantsRoutes);
-app.use("/api/reports/dashboard", verifyToken, dashboardRoutes);
-app.use("/api/tenants", verifyToken, modulesRoutes);
+/* ======================================================
+   PUBLIC ROUTES (NO TOKEN)
+====================================================== */
 app.use("/api/auth", authRoutes);
+
+/* ======================================================
+   superadmin ONLY ROUTES
+====================================================== */
+app.use("/api/tenants",
+  verifyToken,
+  requireRole("superadmin"),
+  tenantsRoutes
+);
+app.use("/api/notification",verifyToken,requireRole("superadmin"),  notificationRoutes);
+
+app.use("/api/plans",
+  verifyToken,
+  requireRole("superadmin"),
+  plansRouter
+);
+app.use("/api/users",verifyToken,requireRole("superadmin"), usersRouter);
+app.use("/api/reports/dashboard",verifyToken,requireRole("superadmin"),  dashboardRoutes);
+app.use("/api/subscriber",
+  verifyToken,
+  requireRole("superadmin"),
+  subscriberRoutes
+);
+
+app.use("/api/amc",
+  verifyToken,
+  requireRole("superadmin"),
+  amcRoutes
+);
+
+app.use("/api/reports",
+  verifyToken,
+  requireRole("superadmin"),
+  reportRoutes
+);
+app.use("/api/subscription_amount_plans",
+  verifyToken,
+  requireRole("superadmin"),
+  subscriptionAmountsRouter
+);
+app.use("/api/modules",
+  verifyToken,
+  requireRole("superadmin"),
+  modulesRoutes
+);
+
+/* ======================================================
+   TENANT OWNER ONLY ROUTES
+====================================================== */
+app.use("/api/settings",
+  verifyToken,
+  requireRole(["tenant", "staff"]),
+  settingsRouter
+);
+
+
+
+app.use("/api/staff",
+  verifyToken,
+  requireRole("tenant"),
+  staffRoutes
+);
+
+app.use("/api/accounts",
+  verifyToken,
+  requireRole("tenant"),
+  accountsRoutes
+);
+
+app.use("/api/purchases",
+  verifyToken,
+  requireRole("tenant"),
+  purchaseRoutes
+);
+
+app.use("/api/suppliers",
+  verifyToken,
+  requireRole("tenant"),
+  supplierRoutes
+);
+
+
+/* ======================================================
+   STAFF + TENANT (SHARED ACCESS)
+====================================================== */
+
+// Inventory (staff + tenant)
 app.use("/api/inventory", verifyToken, inventory);
-app.use("/api/products", product);
-app.use("/api/subscriber", subscriberRoutes);
-app.use("/api/amc", amcRoutes);
-app.use("/api/reports", reportRoutes);
-app.use("/api/users", usersRouter);
-app.use("/api/settings", verifyToken, settingsRouter);
-app.use("/api/plans", plansRouter);
-// Provide both singular and plural endpoints for frontend compatibility
 
-app.use("/api/subscription_amount_plans", subscriptionAmountsRouter);
-
-// ✅ Billing route (after static invoices)
-app.use("/api/invoices", billingRoutes);
-app.use("/api/purchases", verifyToken, purchaseRoutes);
-app.use("/api/suppliers", supplierRoutes);
+// Billing (staff + tenant)
 app.use("/api/invoices", verifyToken, invoiceRoutes);
-app.use("/api/notification", notificationRoutes);
-app.use("/api/discounts", verifyToken, discountRoutes);
+app.use("/api/billing", verifyToken, billingRoutes);
+
+// Returns
 app.use("/api/purchase_returns", verifyToken, purchaseReturnsRouter);
 app.use("/api/sales_returns", verifyToken, salesReturnsRouter);
 
-app.use("/api/staff",verifyToken, staffRoutes);
-app.use("/api/customers",verifyToken, customerRoutes);
-app.use("/api/loyalty-rules",verifyToken, loyaltyRoutes);
-app.use("/api/accounts",verifyToken, accountsRoutes);
+// Customers
+app.use("/api/customers", verifyToken, customerRoutes);
+
+// Loyalty
+app.use("/api/loyalty-rules", verifyToken, loyaltyRoutes);
+
+// Discounts
+app.use("/api/discounts", verifyToken, discountRoutes);
+
+// Products (no role restriction)
+app.use("/api/products", product);
+app.use("/api/tenantreport", verifyToken, reportRoutesTenant);
+
+// Notifications
 
 
+// Users
+
+
+/* ======================================================
+   ROOT
+====================================================== */
 app.get("/", (req, res) => res.send("✅ Server running successfully"));
 
-// Server listen
+/* ======================================================
+   START SERVER
+====================================================== */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

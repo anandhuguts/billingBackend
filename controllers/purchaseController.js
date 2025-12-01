@@ -320,10 +320,16 @@ export const createPurchase = async (req, res) => {
     const purchase_id = purchase.id;
 
     // 4.1️⃣ Now update invoice_number using sequence
-    await supabase
-      .from("purchases")
-      .update({ invoice_number })
-      .eq("id", purchase_id);
+ const { error: invErr } = await supabase
+  .from("purchases")
+  .update({ invoice_number })
+  .eq("id", purchase_id)
+  .eq("tenant_id", tenant_id)
+  .select("*")
+  .single();
+
+if (invErr) throw invErr;
+
 
     // 5️⃣ Insert purchase_items
     const purchaseItemsData = normalizedItems.map((item) => ({
@@ -521,6 +527,30 @@ export const createPurchase = async (req, res) => {
       console.error("⚠ Accounting error:", accErr);
       // You might choose to return 500 here if you want accounting to be strict
     }
+if (payment_method === "cash") {
+
+  // Record payment entry
+  await supabase.from("purchase_payments").insert([
+    {
+      tenant_id,
+      purchase_id,
+      supplier_id,
+      amount: total_amount,
+      payment_method: "cash"
+    } 
+  ]);
+
+  // Mark purchase as paid
+  await supabase
+    .from("purchases")
+    .update({
+      amount_paid: total_amount,
+      is_paid: true
+    })
+    .eq("id", purchase_id)
+     .eq("tenant_id", tenant_id);
+}
+
 
     // 8️⃣ Final response
     return res.status(201).json({

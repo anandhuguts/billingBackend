@@ -591,44 +591,41 @@ export const createInvoice = async (req, res) => {
     }
 
     // 9) Update inventory
-    const lowStockAlerts = [];
-    for (const it of itemsWithDiscounts) {
-      const { data: invData } = await supabase
-        .from("inventory")
-        .select("id, quantity, reorder_level, product_id")
-        .eq("tenant_id", tenant_id)
-        .eq("product_id", it.product_id)
-        .maybeSingle();
+  // 9) Update inventory
+const lowStockAlerts = [];
+for (const it of itemsWithDiscounts) {
+  const { data: invData } = await supabase
+    .from("inventory")
+    .select("id, quantity, reorder_level, product_id")
+    .eq("tenant_id", tenant_id)
+    .eq("product_id", it.product_id)
+    .maybeSingle();
 
-      if (!invData) {
-        await supabase.from("inventory").insert([
-          {
-            tenant_id,
-            product_id: it.product_id,
-            quantity: 0,
-            reorder_level: 5,
-            max_stock: 100,
-          },
-        ]);
-        continue;
-      }
+  // ❌ A sale should NEVER create inventory
+  if (!invData) {
+    throw new Error(
+      `Inventory not found for product_id ${it.product_id}. 
+       Add inventory via PURCHASE first.`
+    );
+  }
 
-      const newQty = Math.max(0, Number(invData.quantity || 0) - it.qty);
+  const newQty = Math.max(0, Number(invData.quantity || 0) - it.qty);
 
-      await supabase
-        .from("inventory")
-        .update({ quantity: newQty })
-        .eq("id", invData.id)
-        .eq("tenant_id", tenant_id);
+  await supabase
+    .from("inventory")
+    .update({ quantity: newQty })
+    .eq("id", invData.id)
+    .eq("tenant_id", tenant_id);
 
-      if (newQty <= Number(invData.reorder_level || 0)) {
-        lowStockAlerts.push({
-          product_id: it.product_id,
-          newQty,
-          reorder_level: invData.reorder_level,
-        });
-      }
-    }
+  if (newQty <= Number(invData.reorder_level || 0)) {
+    lowStockAlerts.push({
+      product_id: it.product_id,
+      newQty,
+      reorder_level: invData.reorder_level,
+    });
+  }
+}
+
     // 9.1) INSERT STOCK MOVEMENTS FOR SALES
     for (const it of itemsWithDiscounts) {
       await supabase.from("stock_movements").insert([
@@ -994,7 +991,11 @@ export const createInvoice = async (req, res) => {
     // Final response
     return res.status(201).json({
       message: "Invoice created successfully",
-      invoice,
+     invoice: {
+    ...invoice,
+    subtotal,
+    final_amount: total_amount
+  },
       items: itemsWithNames,
       lowStockAlerts,
       loyalty: isLoyaltyCustomer

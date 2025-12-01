@@ -238,16 +238,47 @@ export const createSalesReturn = async (req, res) => {
         .json({ error: "Product not found in this invoice" });
     }
 
-    const soldQty = invoiceItems.reduce(
-      (sum, row) => sum + Number(row.quantity || 0),
-      0
-    );
+ /* =========================
+   2) Validate product is in invoice AND remaining returnable quantity
+========================= */
 
-    if (qty > soldQty) {
-      return res.status(400).json({
-        error: "Cannot return more than sold quantity for this product",
-      });
-    }
+// Step A: Check how many were sold
+const soldQty = invoiceItems.reduce(
+  (sum, row) => sum + Number(row.quantity || 0),
+  0
+);
+
+// Step B: Check how many were already returned
+const { data: prevReturns, error: prevErr } = await supabase
+  .from("sales_returns")
+  .select("quantity")
+  .eq("tenant_id", tenant_id)
+  .eq("invoice_id", invoice_id)
+  .eq("product_id", product_id);
+
+if (prevErr) throw prevErr;
+
+const returnedQty = prevReturns?.reduce(
+  (sum, row) => sum + Number(row.quantity || 0),
+  0
+) || 0;
+
+// Step C: Remaining qty allowed
+const remainingQty = soldQty - returnedQty;
+
+// Step D: Validate
+if (remainingQty <= 0) {
+  return res.status(400).json({
+    error: "All sold quantity for this product has already been returned",
+  });
+}
+
+if (qty > remainingQty) {
+  return res.status(400).json({
+    error: `Only ${remainingQty} units can be returned for this product`,
+  });
+}
+
 
     /* =========================
        3) Fetch product price & VAT
