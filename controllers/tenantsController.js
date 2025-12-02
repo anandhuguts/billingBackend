@@ -32,9 +32,36 @@ const calculateAMCInfo = (amc) => {
 
 // GET all tenants
 export const getAllTenants = async (req, res) => {
-  const { data, error } = await supabase.from("tenants").select("*");
-  if (error) return res.status(500).json({ error });
-  res.json(data);
+  try {
+    // Pagination params
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+
+    // Query with count enabled
+    const { data, error, count } = await supabase
+      .from("tenants")
+      .select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(start, end);
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      page,
+      limit,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      data
+    });
+
+  } catch (err) {
+    console.error("❌ getAllTenants error:", err);
+    return res.status(500).json({ error: err.message || "Server Error" });
+  }
 };
 
 // GET single tenant
@@ -94,13 +121,18 @@ export const getTenantById = async (req, res) => {
 // The user record will be linked to the tenant via the tenant_id foreign key
 export const createTenant = async (req, res) => {
   const { name, email, password, category, plan, status, phone } = req.body;
-  if (!name || !email || !password || !category || !phone)
-    return res.status(400).json({ error: "Missing fields" });
+
+  // -------- BASIC VALIDATION --------
+  if (!name || !email || !password || !category || !phone) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Step 1: Insert into tenants table first
+    // ================================================
+    // 1. CREATE TENANT
+    // ================================================
     const { data: tenantData, error: tenantError } = await supabase
       .from("tenants")
       .insert([
@@ -116,19 +148,26 @@ export const createTenant = async (req, res) => {
       .select();
 
     if (tenantError) {
-      console.error("Error creating tenant:", tenantError);
-      return res.status(500).json({ error: tenantError.message });
+      console.error("TENANT CREATION FAILED:", tenantError);
+      return res.status(500).json({
+        error: "Failed to create tenant",
+        details: tenantError.message,
+      });
     }
 
-    // Get the created tenant with its auto-generated ID
     const createdTenant = tenantData[0];
-    console.log("Tenant created with ID:", createdTenant.id);
-    // Create default COA for this tenant
-    await createDefaultCoaForTenant(createdTenant.id);
+    console.log("Tenant created:", createdTenant.id);
 
-    // --- Auto-create an initial payment record based on selected plan ---
-    // Assumption: initial payment amount uses monthly rates per plan.
-    // If plan is 'trial' or not recognized, amount will be 0 and status set to 'trial'.
+    // Create COA — but handle failure without breaking the whole flow
+    try {
+      await createDefaultCoaForTenant(createdTenant.id);
+    } catch (coaErr) {
+      console.error("DEFAULT COA CREATION FAILED:", coaErr);
+    }
+
+    // ================================================
+    // 2. INITIAL PAYMENT
+    // ================================================
     const planMonthlyRates = {
       basic: 1000,
       professional: 2500,
@@ -140,6 +179,7 @@ export const createTenant = async (req, res) => {
     const paymentStatus = amountForPlan > 0 ? "paid" : "trial";
 
     let createdPayment = null;
+
     try {
       const { data: paymentData, error: paymentError } = await supabase
         .from("payments")
@@ -157,50 +197,48 @@ export const createTenant = async (req, res) => {
         .select();
 
       if (paymentError) {
-        console.error(
-          "Error creating initial payment for tenant:",
-          paymentError
-        );
+        console.error("INITIAL PAYMENT FAILED:", paymentError.message);
       } else {
-        createdPayment =
-          paymentData && paymentData.length ? paymentData[0] : null;
-        console.log("Initial payment created for tenant:", createdPayment?.id);
+        createdPayment = paymentData?.[0] || null;
       }
     } catch (err) {
-      console.error("Unexpected error creating initial payment:", err);
+      console.error("UNEXPECTED PAYMENT ERROR:", err);
     }
 
-    // Step 2: Insert into users table with tenant_id foreign key
-    // This links the user to the tenant via the tenant_id column
+    // ================================================
+    // 3. CREATE USER
+    // ================================================
     const { data: userData, error: userError } = await supabase
       .from("users")
       .insert([
         {
           full_name: name,
-          email: email,
+          email,
           password: hashedPassword,
-          role: "tenant", // Default role for tenant users
-          tenant_id: createdTenant.id, // Foreign key linking to tenants table
-          is_active: status === "active" ? true : false,
+          role: "tenant",
+          tenant_id: createdTenant.id,
+          is_active: status === "active",
         },
       ])
       .select();
 
-    // If user creation fails, log the error but don't fail the whole request
     if (userError) {
-      console.error("Error creating user:", userError);
-      // Return tenant + payment data with warning about user creation
-      return res.status(201).json({
-        message: "Tenant created but user creation failed",
-        tenant: createdTenant,
-        payment: createdPayment,
-        warning: userError.message,
+      console.error("USER CREATION FAILED:", userError);
+
+      // Rollback option: delete tenant when user creation fails
+      await supabase.from("tenants").delete().eq("id", createdTenant.id);
+
+      return res.status(500).json({
+        error: "Tenant created but user creation failed. Rolling back tenant.",
+        details: userError.message,
       });
     }
 
-    console.log("User created with tenant_id:", userData[0].tenant_id);
+    console.log("User created:", userData[0].id);
 
-    // Both tenant, initial payment (if created), and user created successfully
+    // ================================================
+    // SUCCESS RESPONSE
+    // ================================================
     res.status(201).json({
       message: "Tenant, user, and initial payment created successfully",
       tenant: createdTenant,
@@ -208,10 +246,15 @@ export const createTenant = async (req, res) => {
       payment: createdPayment,
     });
   } catch (err) {
-    console.error("Unexpected error in createTenant:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error("UNEXPECTED ERROR IN createTenant:", err);
+
+    return res.status(500).json({
+      error: "Internal server error",
+      details: err?.message || "Unknown error",
+    });
   }
 };
+
 
 // UPDATE tenant
 // Update tenant and return with all associated AMC records

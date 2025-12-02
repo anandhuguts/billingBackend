@@ -92,8 +92,17 @@ function coaId(map, name) {
 
 export const getAllSalesReturns = async (req, res) => {
   try {
+    const tenantId = req.user?.tenant_id;
+    const role = req.user?.role;
     const { invoice_id } = req.query;
 
+    // Pagination
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+
+    // Base query
     let q = supabase
       .from("sales_returns")
       .select(
@@ -102,26 +111,39 @@ export const getAllSalesReturns = async (req, res) => {
         products(name, sku),
         invoices(invoice_number),
         customers(name)
-      `
+      `,
+        { count: "exact" }
       )
       .order("created_at", { ascending: false });
 
-    if (req.user.role !== "super_admin") {
-      q = q.eq("tenant_id", req.user.tenant_id);
+    // Restrict tenant scope unless superadmin
+    if (role !== "superadmin") {
+      q = q.eq("tenant_id", tenantId);
     }
 
+    // Filter by invoice if passed
     if (invoice_id) q = q.eq("invoice_id", invoice_id);
 
-    const { data, error } = await q;
+    // Apply pagination
+    const { data, error, count } = await q.range(start, end);
 
     if (error) return res.status(500).json({ error: error.message });
 
-    res.json({ sales_returns: data || [] });
+    return res.json({
+      success: true,
+      page,
+      limit,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      data: data || []
+    });
+
   } catch (err) {
     console.error("getAllSalesReturns error", err);
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 };
+
 
 /* =========================================================
    GET SALES RETURN BY ID

@@ -111,7 +111,15 @@ export const getAllPurchases = async (req, res) => {
     const tenant_id = req.user?.tenant_id;
     if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
 
-    const { data: purchases, error } = await supabase
+    // Pagination query params
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+
+    // Fetch purchases with count
+    const { data: purchases, error, count } = await supabase
       .from("purchases")
       .select(
         `
@@ -125,13 +133,16 @@ export const getAllPurchases = async (req, res) => {
             unit
           )
         )
-      `
+      `,
+        { count: "exact" }
       )
       .eq("tenant_id", tenant_id)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .range(start, end);
 
     if (error) throw error;
 
+    // Format purchases response
     const formattedPurchases =
       purchases?.map((purchase) => ({
         id: purchase.id,
@@ -156,6 +167,10 @@ export const getAllPurchases = async (req, res) => {
 
     return res.json({
       success: true,
+      page,
+      limit,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
       data: formattedPurchases,
     });
   } catch (err) {
@@ -163,6 +178,7 @@ export const getAllPurchases = async (req, res) => {
     return res.status(500).json({ error: err.message || "Server Error" });
   }
 };
+
 
 // GET /api/purchases/:id - Get single purchase by ID
 export const getPurchaseById = async (req, res) => {

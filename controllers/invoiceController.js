@@ -3,11 +3,21 @@ import { supabase } from "../supabase/supabaseClient.js";
 import { applyDiscounts } from "../controllers/BillingController.js";
 
 // GET /api/invoices - Get all invoices with items
+// GET /api/invoices?page=1&limit=10
 export const getAllInvoices = async (req, res) => {
   try {
     const tenant_id = req.user?.tenant_id;
     if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
 
+    // Pagination inputs
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+
+    // Calculate range for Supabase
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+
+    // Fetch paginated invoices
     const { data: invoices, error } = await supabase
       .from("invoices")
       .select(`
@@ -21,21 +31,28 @@ export const getAllInvoices = async (req, res) => {
             unit
           )
         )
-      `)
+      `, { count: "exact" })   // <-- 👈 GET TOTAL COUNT
       .eq("tenant_id", tenant_id)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .range(start, end);
 
     if (error) throw error;
 
     return res.json({
       success: true,
+      page,
+      limit,
+      total: invoices.length,
+      totalRecords: invoices?.length ? invoices[0].total_count : 0,
       data: invoices
     });
+
   } catch (err) {
     console.error("❌ Get invoices failed:", err);
     return res.status(500).json({ error: err.message || "Server Error" });
   }
 };
+
 
 // DELETE /api/invoices/:id - Delete invoice
 export const deleteInvoice = async (req, res) => {

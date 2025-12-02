@@ -7,20 +7,39 @@ export const getDaybook = async (req, res) => {
   try {
     const tenant_id = req.user.tenant_id;
 
-    const { data, error } = await supabase
+    if (!tenant_id)
+      return res.status(403).json({ error: "Unauthorized" });
+
+    // Pagination
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+
+    const { data, error, count } = await supabase
       .from("daybook")
-      .select("*")
+      .select("*", { count: "exact" })
       .eq("tenant_id", tenant_id)
-      .order("created_at", { ascending: false }); // or "date" if your column is named that
+      .order("created_at", { ascending: false })
+      .range(start, end);
 
     if (error) throw error;
 
-    return res.json({ success: true, data });
+    return res.json({
+      success: true,
+      page,
+      limit,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      data: data || []
+    });
+
   } catch (err) {
     console.error("getDaybook error:", err);
     return res.status(500).json({ error: err.message });
   }
 };
+
 
 /* -----------------------------------------
    2. LEDGER (from ledger_entries)
@@ -29,20 +48,39 @@ export const getLedger = async (req, res) => {
   try {
     const tenant_id = req.user.tenant_id;
 
-    const { data, error } = await supabase
+    if (!tenant_id)
+      return res.status(403).json({ error: "Unauthorized" });
+
+    // Pagination
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+
+    const { data, error, count } = await supabase
       .from("ledger_entries")
-      .select("*")
+      .select("*", { count: "exact" })
       .eq("tenant_id", tenant_id)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .range(start, end);
 
     if (error) throw error;
 
-    return res.json({ success: true, data });
+    return res.json({
+      success: true,
+      page,
+      limit,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      data: data || []
+    });
+
   } catch (err) {
     console.error("getLedger error:", err);
     return res.status(500).json({ error: err.message });
   }
 };
+
 
 /* -----------------------------------------
    3. TRIAL BALANCE (from journal_entries + COA)

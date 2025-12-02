@@ -94,9 +94,18 @@ function coaId(map, name) {
 export const getAllPurchaseReturns = async (req, res) => {
   try {
     const tenant_id = req.user?.tenant_id;
-    if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
+    if (!tenant_id)
+      return res.status(403).json({ error: "Unauthorized" });
 
-    const { data, error } = await supabase
+    // Pagination
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+
+    // Fetch with count included
+    const { data, error, count } = await supabase
       .from("purchase_returns")
       .select(
         `
@@ -104,19 +113,30 @@ export const getAllPurchaseReturns = async (req, res) => {
         products(name, sku),
         purchases(invoice_number),
         suppliers(name)
-      `
+      `,
+        { count: "exact" }
       )
       .eq("tenant_id", tenant_id)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .range(start, end);
 
     if (error) return res.status(500).json({ error: error.message });
 
-    res.json({ purchase_returns: data || [] });
+    return res.json({
+      success: true,
+      page,
+      limit,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      data: data || []
+    });
+
   } catch (err) {
     console.error("getAllPurchaseReturns error", err);
-    res.status(500).json({ error: "Internal server error" });
+    return res.status(500).json({ error: "Internal server error" });
   }
 };
+
 
 /* =========================================================
    GET PURCHASE RETURN BY ID
