@@ -319,32 +319,36 @@ export const createPurchase = async (req, res) => {
     // 4️⃣ Insert purchase
 
     // 4️⃣ Insert purchase WITHOUT invoice_number first
-    const { data: purchase, error: purchaseErr } = await supabase
-      .from("purchases")
-      .insert([
-        {
-          tenant_id,
-          supplier_id,
-          total_amount,
-        },
-      ])
-      .select("id, created_at")
-      .single();
-
-    if (purchaseErr) throw purchaseErr;
-
-    const purchase_id = purchase.id;
-
-    // 4.1️⃣ Now update invoice_number using sequence
- const { error: invErr } = await supabase
+ const { data: purchase, error: purchaseErr } = await supabase
   .from("purchases")
-  .update({ invoice_number })
-  .eq("id", purchase_id)
-  .eq("tenant_id", tenant_id)
-  .select("*")
+  .insert([
+    {
+      tenant_id,
+      supplier_id,
+      total_amount,
+      invoice_number,   // ← Insert invoice number here
+      amount_paid: 0,
+      is_paid: false,
+    },
+  ])
+  .select("id, created_at")
   .single();
 
-if (invErr) throw invErr;
+if (purchaseErr) throw purchaseErr;
+
+const purchase_id = purchase.id;
+
+
+    // 4.1️⃣ Now update invoice_number using sequence
+//  const { error: invErr } = await supabase
+//   .from("purchases")
+//   .update({ invoice_number })
+//   .eq("id", purchase_id)
+//   .eq("tenant_id", tenant_id)
+//   .select("*")
+//   .single();
+
+// if (invErr) throw invErr;
 
 
     // 5️⃣ Insert purchase_items

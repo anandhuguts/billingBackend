@@ -86,6 +86,82 @@ async function insertLedgerEntry({
  * - Returns items with per-unit discount_amount & net_price
  * - Also returns invoice-level discount totals
  */
+
+// ==============================
+// EMPLOYEE DISCOUNT CALCULATOR
+// ==============================
+async function calculateEmployeeDiscount({
+  tenant_id,
+  buyer_employee_id,
+  logged_in_user,
+  subtotal,
+  invoice_id
+}) {
+  // 1) Must provide employee_id in body
+  if (!buyer_employee_id) return { discount: 0 };
+
+  // 2) Only the same employee can bill themselves
+  if (buyer_employee_id !== logged_in_user.id) return { discount: 0 };
+
+  // 3) Must be staff role
+  if (logged_in_user.role !== "staff") return { discount: 0 };
+
+  // 4) Get employee discount rule
+  const { data: rules } = await supabase
+    .from("employee_discount_rules")
+    .select("*")
+    .eq("tenant_id", tenant_id)
+    .eq("is_active", true)
+    .limit(1);
+
+  if (!rules?.length) return { discount: 0 };
+  const rule = rules[0];
+
+  // Base discount
+  let discount = (subtotal * Number(rule.discount_percent || 0)) / 100;
+
+  // Per bill max
+  if (rule.max_discount_amount && discount > rule.max_discount_amount) {
+    discount = rule.max_discount_amount;
+  }
+
+  // Monthly limit check
+  if (rule.monthly_limit) {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const next = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString();
+
+    const { data: used } = await supabase
+      .from("employee_discount_usage")
+      .select("discount_amount")
+      .eq("tenant_id", tenant_id)
+      .eq("employee_id", buyer_employee_id)
+      .gte("used_at", start)
+      .lt("used_at", next);
+
+    const usedAmt = used?.reduce((t, r) => t + Number(r.discount_amount), 0) || 0;
+    const remaining = rule.monthly_limit - usedAmt;
+
+    if (remaining <= 0) discount = 0;
+    else if (discount > remaining) discount = remaining;
+  }
+
+  // Insert TEMP record (invoice_id assigned later)
+  if (discount > 0) {
+    await supabase.from("employee_discount_usage").insert([
+      {
+        tenant_id,
+        employee_id: buyer_employee_id,
+        invoice_id,
+        discount_amount: discount,
+      },
+    ]);
+  }
+
+  return { discount };
+}
+
+
 export async function applyDiscounts({
   items,
   tenant_id,
@@ -374,6 +450,8 @@ export async function applyDiscounts({
  * - accounting (Sales, VAT, COGS, Inventory)
  */
 export const createInvoice = async (req, res) => {
+  console.log("REQ USER DEBUG =>", req.user);
+console.log("AUTH HEADER =>", req.headers.authorization);
   try {
     const tenant_id = req.user.tenant_id;
     const {
@@ -428,8 +506,21 @@ export const createInvoice = async (req, res) => {
       invoiceDiscounts,
       appliedCouponRule,
     } = discountResult;
+// ====================================
+// EMPLOYEE DISCOUNT (STAFF USER ONLY)
+// ====================================
+const { discount: employee_discount_total } = await calculateEmployeeDiscount({
+  tenant_id,
+  buyer_employee_id: req.body.employee_id || null,
+  logged_in_user: req.user,
+  subtotal,
+  invoice_id: null
+});
 
-    let total_amount = total_before_redeem;
+
+    let total_amount =
+  total_before_redeem - employee_discount_total;
+
 
     // 2) Coupon per-customer limit validation (if coupon and customer)
     if (
@@ -505,24 +596,60 @@ export const createInvoice = async (req, res) => {
     const invoice_number = `INV-${year}-${String(seq).padStart(4, "0")}`;
 
     // 4) Insert invoice WITHOUT invoice_number first
-    const { data: invoice, error: invoiceErr } = await supabase
-      .from("invoices")
-      .insert([
-        {
-          tenant_id,
-          handled_by: req.user.id,
-          customer_id: isLoyaltyCustomer ? customer_id : null,
-          total_amount,
-          payment_method,
-          item_discount_total,
-          bill_discount_total,
-          coupon_discount_total,
-          membership_discount_total,
-          final_amount: total_amount,
-        },
-      ])
-      .select("id, created_at")
-      .single();
+// ===========================
+// 4) INSERT INVOICE (DEBUG LOGGING)
+// ===========================
+console.log("📌 STARTING INVOICE INSERT...");
+
+const insertPayload = {
+  tenant_id,
+  handled_by: req.user.id,
+  customer_id: isLoyaltyCustomer ? customer_id : null,
+  total_amount,
+  payment_method,
+  item_discount_total,
+  bill_discount_total,
+  coupon_discount_total,
+  membership_discount_total,
+  employee_discount_total,
+  final_amount: total_amount,
+};
+
+console.log("📦 INSERT PAYLOAD =>", insertPayload);
+
+const insertResult = await supabase
+  .from("invoices")
+  .insert([insertPayload])
+  .select("*")
+  .maybeSingle();
+
+console.log("🧾 INSERT RESULT =>", insertResult);
+
+const invoice = insertResult.data;
+const invoiceErr = insertResult.error;
+
+if (invoiceErr) {
+  console.error("❌ SUPABASE INSERT ERROR:", invoiceErr);
+  return res.status(500).json({ error: invoiceErr.message });
+}
+
+if (!invoice) {
+  console.error("❌ INSERT RETURNED NULL. MOST LIKELY CAUSE: Missing required column.");
+  return res.status(500).json({ error: "Invoice insert returned null. Check console." });
+}
+
+console.log("✅ INSERTED INVOICE =>", invoice);
+
+
+      // === UPDATE EMPLOYEE DISCOUNT USAGE WITH INVOICE ID ===
+if (employee_discount_total > 0) {
+  await supabase
+    .from("employee_discount_usage")
+    .update({ invoice_id: invoice.id })
+    .eq("employee_id", req.body.employee_id)
+    .is("invoice_id", null);
+}
+
 
     if (invoiceErr) throw invoiceErr;
 
@@ -695,6 +822,8 @@ for (const it of itemsWithDiscounts) {
         bill_discount_total,
         coupon_discount_total,
         membership_discount_total,
+        employee_discount_total,
+
         final_amount: total_amount,
       })
       .eq("id", invoice.id);
@@ -846,6 +975,19 @@ for (const it of itemsWithDiscounts) {
           reference_id: invoice.id,
         });
       }
+
+      // EMPLOYEE DISCOUNT (Expense)
+if (employee_discount_total > 0) {
+  await addJournalEntry({
+    tenant_id,
+    debit_account: coaId("Staff Discount Expense"),
+    credit_account: coaId("Sales"),
+    amount: employee_discount_total,
+    description: `Employee discount for invoice #${invoice.id}`,
+    reference_id: invoice.id,
+  });
+}
+
 
       if (bill_discount_total > 0) {
         await addJournalEntry({

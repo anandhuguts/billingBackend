@@ -36,6 +36,9 @@ import accountsRoutes from "./routes/accountsRoutes.js";
 import purchaseReturnsRouter from "./routes/returnPurchaseRouter.js";
 import salesReturnsRouter from "./routes/returnSalesRoter.js";
 import reportRoutesTenant from "./routes/reportsDynamicRoutes.js";
+import attendanceRoutes from "./routes/attendanceRoutes.js";
+import salaryRoutes from "./routes/salaryRoutes.js";  
+import EmplopyeeDiscountRoutes from "./routes/EmplyeeDiscountRoutes.js";
 
 const app = express();
 
@@ -174,6 +177,9 @@ app.use("/api/discounts", verifyToken, discountRoutes);
 // Products (no role restriction)
 app.use("/api/products", product);
 app.use("/api/tenantreport", verifyToken, reportRoutesTenant);
+app.use("/api/employees/attendance",verifyToken, attendanceRoutes);
+app.use("/api/employees/salary",verifyToken, salaryRoutes);
+app.use("/api/employees/discount",verifyToken, EmplopyeeDiscountRoutes);
 
 // Notifications
 
