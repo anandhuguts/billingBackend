@@ -2,7 +2,10 @@ import bcrypt from "bcrypt";
 import { supabase } from "../supabase/supabaseClient.js";
 
 export const StaffController = {
-  // LIST staff
+
+  /* ============================
+       GET ALL STAFF USERS
+  ============================ */
   async getAll(req, res) {
     try {
       const { tenant_id } = req.user;
@@ -11,8 +14,7 @@ export const StaffController = {
         .from("users")
         .select("id, full_name, email, role, is_active, created_at")
         .eq("tenant_id", tenant_id)
-        .neq("role", "tenant")
-        .neq("role", "superadmin")
+        .eq("role", "staff")
         .order("created_at", { ascending: false });
 
       if (error) throw error;
@@ -23,104 +25,125 @@ export const StaffController = {
     }
   },
 
-  // CREATE staff
-  // CREATE staff
-// CREATE staff
-async create(req, res) {
-  try {
-    const { full_name, email, password, role, is_active } = req.body;
-    const { tenant_id } = req.user;
 
-    console.log("Incoming body:", req.body);
-    console.log("Tenant ID:", tenant_id);
+  /* ============================
+       CREATE STAFF USER + EMPLOYEE
+  ============================ */
+  async create(req, res) {
+    try {
+      const { full_name, email, password, salary, phone, position } = req.body;
+      const { tenant_id } = req.user;
 
-    // Basic validation
-    if (!full_name || !email || !password) {
-      return res.status(400).json({ error: "Required fields missing" });
-    }
+      if (!full_name || !email || !password) {
+        return res.status(400).json({ error: "Required fields missing" });
+      }
 
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
+      // Hash password
+      const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Insert staff
-    const { data, error } = await supabase
-      .from("users")
-      .insert([
-        {
-          full_name,
-          email,
-          password: hashedPassword,
-          role: role || "staff",
-          tenant_id,
-          is_active: is_active ?? true,
-        },
-      ])
-      .select("id, full_name, email, role, is_active"); // forces RETURNING
+      // 1️⃣ Create user (login account)
+      const { data: userRows, error: userErr } = await supabase
+        .from("users")
+        .insert([
+          {
+            full_name,
+            email,
+            password: hashedPassword,
+            role: "staff",
+            tenant_id,
+            is_active: true,
+          },
+        ])
+        .select();
 
-    console.log("Supabase error:", error);
-    console.log("Supabase data:", data);
+      if (userErr) throw userErr;
 
-    // Duplicate email error
-    if (error && error.code === "23505") {
-      return res.status(400).json({ error: "Email already registered" });
-    }
+      const user = userRows[0];
 
-    // Other insert error
-    if (error) {
-      throw error;
-    }
+      // 2️⃣ Create employee record
+      const { error: empErr } = await supabase
+        .from("employees")
+        .insert([
+          {
+            id: user.id,        // same UUID
+            tenant_id,
+            full_name,
+            phone: phone || "",
+            position: position || "Staff",
+            salary: salary || 0,
+          },
+        ]);
 
-    // Supabase sometimes inserts but returns null (RETURNING disabled)
-    if (!data || data.length === 0) {
+      if (empErr) throw empErr;
+
       return res.json({
         success: true,
-        message: "Staff created successfully",
+        message: "Staff & employee created",
+        data: user
       });
+
+    } catch (error) {
+      console.error("Staff create error:", error);
+      return res.status(500).json({ error: error.message });
     }
+  },
 
-    // Success with returned row
-    return res.json({ success: true, data: data[0] });
-  } catch (error) {
-    console.error("Server error:", error);
-    return res.status(500).json({ error: error.message });
-  }
-},
 
-  // UPDATE staff
+  /* ============================
+       UPDATE STAFF + EMPLOYEE
+  ============================ */
   async update(req, res) {
     try {
       const { id } = req.params;
-      const { full_name, role, is_active } = req.body;
+      const { full_name, role, is_active, salary, phone, position } = req.body;
       const { tenant_id } = req.user;
 
-      const { data, error } = await supabase
+      // Update users table
+      const { error: userErr } = await supabase
         .from("users")
         .update({ full_name, role, is_active })
-        .match({ id, tenant_id })
-        .select();
+        .match({ id, tenant_id });
 
-      if (error) throw error;
+      if (userErr) throw userErr;
 
-      return res.json({ success: true, data: data[0] });
+      // Update employees table
+      const { error: empErr } = await supabase
+        .from("employees")
+        .update({ full_name, salary, phone, position })
+        .match({ id, tenant_id });
+
+      if (empErr) throw empErr;
+
+      return res.json({ success: true, message: "Staff updated" });
+
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }
   },
 
-  // DELETE staff
+
+  /* ============================
+       DELETE STAFF + EMPLOYEE
+  ============================ */
   async delete(req, res) {
     try {
       const { id } = req.params;
       const { tenant_id } = req.user;
 
-      const { error } = await supabase
+      // 1️⃣ Delete employee record
+      await supabase
+        .from("employees")
+        .delete()
+        .match({ id, tenant_id });
+
+      // 2️⃣ Delete user login
+      await supabase
         .from("users")
         .delete()
         .match({ id, tenant_id });
 
-      if (error) throw error;
-
       return res.json({ success: true, message: "Staff removed" });
+
     } catch (error) {
       return res.status(500).json({ error: error.message });
     }

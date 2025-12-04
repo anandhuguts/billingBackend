@@ -6,7 +6,11 @@ export const AttendanceController = {
   async checkIn(req, res) {
     try {
       const tenant_id = req.user.tenant_id;
-      const employee_id = req.user.id;  // IMPORTANT FIX
+      const employee_id = req.user.employee_id;
+
+      if (!employee_id) {
+        return res.status(400).json({ error: "Employee record not linked" });
+      }
 
       const today = new Date().toISOString().split("T")[0];
 
@@ -39,16 +43,22 @@ export const AttendanceController = {
       if (error) throw error;
 
       return res.json({ success: true, data });
+
     } catch (err) {
       console.error("checkIn error:", err);
       return res.status(500).json({ error: err.message });
     }
   },
 
+
   async checkOut(req, res) {
     try {
       const tenant_id = req.user.tenant_id;
-      const employee_id = req.user.id;
+      const employee_id = req.user.employee_id;
+
+      if (!employee_id) {
+        return res.status(400).json({ error: "Employee record not linked" });
+      }
 
       const today = new Date().toISOString().split("T")[0];
 
@@ -90,23 +100,26 @@ export const AttendanceController = {
     }
   },
 
+
   async getAllAttendance(req, res) {
     try {
       const tenant_id = req.user.tenant_id;
 
       const { data, error } = await supabase
         .from("employee_attendance")
-        .select("*, users(full_name)")
+        .select("*, employees(full_name, position)")
         .eq("tenant_id", tenant_id)
         .order("date", { ascending: false });
 
       if (error) throw error;
 
       return res.json({ success: true, data });
+
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
   },
+
 
   async getAttendanceByEmployee(req, res) {
     try {
@@ -123,9 +136,9 @@ export const AttendanceController = {
       if (error) throw error;
 
       return res.json({ success: true, data });
+
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
   },
-
 };

@@ -147,7 +147,7 @@ async function calculateEmployeeDiscount({
   }
 
   // Insert TEMP record (invoice_id assigned later)
-  if (discount > 0) {
+ if (discount > 0 && buyer_employee_id === logged_in_user.id) {
     await supabase.from("employee_discount_usage").insert([
       {
         tenant_id,
@@ -463,8 +463,37 @@ console.log("AUTH HEADER =>", req.headers.authorization);
     } = req.body;
     console.log(req.body);
 
+    
+
     if (!items || items.length === 0)
       return res.status(400).json({ error: "No items provided" });
+
+    // ======================================
+// FETCH PRODUCT PRICES & TAX FROM DB
+// ======================================
+const productIds = items.map((i) => i.product_id);
+
+const { data: productData, error: prodErr } = await supabase
+  .from("products")
+  .select("id, selling_price, tax")
+  .in("id", productIds);
+
+if (prodErr) {
+  return res.status(500).json({ error: "Failed to fetch product info" });
+}
+
+const mergedItems = items.map((i) => {
+  const p = productData.find((x) => x.id === i.product_id);
+  if (!p) throw new Error(`Product not found: ${i.product_id}`);
+
+  return {
+    product_id: i.product_id,
+    qty: i.qty,
+    price: Number(p.selling_price),   // backend price override
+    tax: Number(p.tax),       // backend tax override
+  };
+});
+
 
     const isLoyaltyCustomer = !!customer_id;
     let customer = null;
@@ -485,12 +514,13 @@ console.log("AUTH HEADER =>", req.headers.authorization);
     // 1) Apply discounts
     let discountResult;
     try {
-      discountResult = await applyDiscounts({
-        items,
-        tenant_id,
-        customer,
-        couponCode: coupon_code,
-      });
+    discountResult = await applyDiscounts({
+  items: mergedItems,
+  tenant_id,
+  customer,
+  couponCode: coupon_code,
+});
+
     } catch (err) {
       return res.status(400).json({ error: err.message });
     }
@@ -659,6 +689,13 @@ if (employee_discount_total > 0) {
       .update({ invoice_number })
       .eq("id", invoice.id);
 
+
+      const { data: updatedInvoice } = await supabase
+  .from("invoices")
+  .select("*")
+  .eq("id", invoice.id)
+  .single();
+
     // 5) Attach invoice_id to earlier redeem transactions
     if (isLoyaltyCustomer && redeem_points > 0) {
       await supabase
@@ -670,24 +707,26 @@ if (employee_discount_total > 0) {
 
     // 6) Insert invoice_items with per-unit discount & net_price
     const invoiceItemsToInsert = itemsWithDiscounts.map((it) => {
-      const qty = Number(it.qty || 0);
-      const price = Number(it.price || 0); // inclusive per unit
-      const discountPerUnit = Number(it.discount_amount || 0);
-      const netUnit = price - discountPerUnit;
-      const lineTotal = netUnit * qty;
+  const qty = Number(it.qty || 0);
+  const price = Number(it.price || 0);
+  const discountPerUnit = Number(it.discount_amount || 0);
+  const netUnit = price - discountPerUnit;
+  const lineTotal = netUnit * qty;
 
-      return {
-        tenant_id,
-        invoice_id: invoice.id,
-        product_id: it.product_id,
-        quantity: qty,
-        price,
-        tax: it.tax, // tax percent
-        discount_amount: discountPerUnit,
-        net_price: netUnit,
-        total: lineTotal,
-      };
-    });
+  return {
+    tenant_id,
+    invoice_id: invoice.id,
+    product_id: it.product_id,
+    quantity: qty,
+    price,
+    tax: it.tax,   // percent
+    tax_amount: Number(it.taxAmount || 0),  // <-- NEW FIELD
+    discount_amount: discountPerUnit,
+    net_price: netUnit,
+    total: lineTotal,
+  };
+});
+
 
     const { error: itemsError } = await supabase
       .from("invoice_items")
@@ -1109,21 +1148,22 @@ if (employee_discount_total > 0) {
     }
 
     // 13) Fetch product names and merge into items (for response)
-    const productIds = [
-      ...new Set(invoiceItemsToInsert.map((i) => i.product_id)),
-    ];
+ const productIds2 = [
+  ...new Set(invoiceItemsToInsert.map((i) => i.product_id)),
+];
 
-    const { data: productData, error: prodErr } = await supabase
-      .from("products")
-      .select("id, name")
-      .in("id", productIds);
+const { data: productNames, error: productNameErr } = await supabase
+  .from("products")
+  .select("id, name")
+  .in("id", productIds2);
 
-    if (prodErr) throw prodErr;
+if (productNameErr) throw productNameErr;
 
-    const productMap = {};
-    (productData || []).forEach((p) => {
-      productMap[p.id] = p.name;
-    });
+const productMap = {};
+(productNames || []).forEach((p) => {
+  productMap[p.id] = p.name;
+});
+
 
     const itemsWithNames = invoiceItemsToInsert.map((it) => ({
       ...it,
@@ -1135,6 +1175,7 @@ if (employee_discount_total > 0) {
       message: "Invoice created successfully",
      invoice: {
     ...invoice,
+    ...updatedInvoice,
     subtotal,
     final_amount: total_amount
   },

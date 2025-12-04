@@ -39,6 +39,7 @@ import reportRoutesTenant from "./routes/reportsDynamicRoutes.js";
 import attendanceRoutes from "./routes/attendanceRoutes.js";
 import salaryRoutes from "./routes/salaryRoutes.js";  
 import EmplopyeeDiscountRoutes from "./routes/EmplyeeDiscountRoutes.js";
+import employeesRoutes from "./routes/employeesRoutes.js";
 
 const app = express();
 
@@ -180,6 +181,7 @@ app.use("/api/tenantreport", verifyToken, reportRoutesTenant);
 app.use("/api/employees/attendance",verifyToken, attendanceRoutes);
 app.use("/api/employees/salary",verifyToken, salaryRoutes);
 app.use("/api/employees/discount",verifyToken, EmplopyeeDiscountRoutes);
+app.use("/api/employees", verifyToken,employeesRoutes);
 
 // Notifications
 

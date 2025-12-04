@@ -1,7 +1,10 @@
-// controllers/emplyeeDiscountController.js
+// controllers/employeeDiscountController.js
 import { supabase } from "../supabase/supabaseClient.js";
 
 export const EmployeeDiscountController = {
+  /* =====================================================
+     SET RULE
+  ===================================================== */
   async setRule(req, res) {
     try {
       const tenant_id = req.user.tenant_id;
@@ -30,6 +33,9 @@ export const EmployeeDiscountController = {
     }
   },
 
+  /* =====================================================
+     GET ACTIVE RULE
+  ===================================================== */
   async getRule(req, res) {
     try {
       const tenant_id = req.user.tenant_id;
@@ -50,6 +56,9 @@ export const EmployeeDiscountController = {
     }
   },
 
+  /* =====================================================
+     APPLY DISCOUNT
+  ===================================================== */
   async apply(req, res) {
     try {
       const tenant_id = req.user.tenant_id;
@@ -59,7 +68,23 @@ export const EmployeeDiscountController = {
         return res.status(400).json({ error: "Missing required fields" });
       }
 
-      // 1. Get active rule
+      /* -----------------------------------------------------
+         Validate employee exists in employees table
+      ----------------------------------------------------- */
+      const { data: employee, error: empErr } = await supabase
+        .from("employees")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("id", employee_id)
+        .single();
+
+      if (empErr || !employee) {
+        return res.status(400).json({ error: "Employee not found" });
+      }
+
+      /* -----------------------------------------------------
+         Get active rule
+      ----------------------------------------------------- */
       const { data: rules, error: ruleErr } = await supabase
         .from("employee_discount_rules")
         .select("*")
@@ -74,15 +99,18 @@ export const EmployeeDiscountController = {
 
       const rule = rules[0];
 
-      // 2. Base discount from percent
-      let discount = (Number(subtotal) * Number(rule.discount_percent || 0)) / 100;
+      /* -----------------------------------------------------
+         Calculate discount
+      ----------------------------------------------------- */
+      let discount =
+        (Number(subtotal) * Number(rule.discount_percent || 0)) / 100;
 
-      // 3. Cap 1: per-bill max
+      // Cap 1: per-bill maximum
       if (rule.max_discount_amount && discount > rule.max_discount_amount) {
         discount = Number(rule.max_discount_amount);
       }
 
-      // 4. Cap 2: monthly limit
+      // Cap 2: Monthly limit
       if (rule.monthly_limit) {
         const now = new Date();
         const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -101,7 +129,7 @@ export const EmployeeDiscountController = {
         if (usedErr) throw usedErr;
 
         const monthly_used = (usedRows || []).reduce(
-          (sum, row) => sum + Number(row.discount_amount || 0),
+          (s, r) => s + Number(r.discount_amount || 0),
           0
         );
 
@@ -118,7 +146,9 @@ export const EmployeeDiscountController = {
 
       const final_amount = Number(subtotal) - discount;
 
-      // 5. Save usage
+      /* -----------------------------------------------------
+         Save usage
+      ----------------------------------------------------- */
       const { error: insertErr } = await supabase
         .from("employee_discount_usage")
         .insert([
@@ -143,6 +173,9 @@ export const EmployeeDiscountController = {
     }
   },
 
+  /* =====================================================
+     GET USAGE
+  ===================================================== */
   async getUsage(req, res) {
     try {
       const tenant_id = req.user.tenant_id;

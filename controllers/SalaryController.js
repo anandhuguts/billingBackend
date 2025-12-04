@@ -73,7 +73,23 @@ export const SalaryController = {
         return res.status(400).json({ error: "Missing required fields" });
       }
 
-      // PREVENT duplicate salary for same employee/month
+      /* ------------------------------------------------------------
+         1️⃣ Validate employee exists in employees table
+      ------------------------------------------------------------ */
+      const { data: emp, error: empErr } = await supabase
+        .from("employees")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("id", employee_id)
+        .single();
+
+      if (empErr || !emp) {
+        return res.status(400).json({ error: "Employee not found in employees table" });
+      }
+
+      /* ------------------------------------------------------------
+         2️⃣ Prevent duplicate salary month
+      ------------------------------------------------------------ */
       const { data: existing } = await supabase
         .from("employee_salary_payments")
         .select("*")
@@ -88,7 +104,9 @@ export const SalaryController = {
 
       const net_salary = Number(salary_amount) + Number(bonuses) - Number(deductions);
 
-      // SAVE salary record first
+      /* ------------------------------------------------------------
+         3️⃣ Insert salary record
+      ------------------------------------------------------------ */
       const { data: salaryRows, error: salaryErr } = await supabase
         .from("employee_salary_payments")
         .insert([
@@ -110,7 +128,7 @@ export const SalaryController = {
       const salaryRecord = salaryRows[0];
 
       /* ------------------------------------------------------------
-        GET REQUIRED ACCOUNT IDs
+         4️⃣ Get required COA accounts
       ------------------------------------------------------------ */
       const { data: coa, error: coaErr } = await supabase
         .from("coa")
@@ -128,9 +146,9 @@ export const SalaryController = {
       const description = `Salary payment for ${month}`;
 
       /* ------------------------------------------------------------
-        JOURNAL ENTRY
-        Debit  Salary Expense
-        Credit Cash/Bank
+         5️⃣ Create Journal Entry
+         Debit  Salary Expense
+         Credit Cash/Bank
       ------------------------------------------------------------ */
       await addJournalEntry({
         tenant_id,
@@ -142,7 +160,7 @@ export const SalaryController = {
       });
 
       /* ------------------------------------------------------------
-        LEDGER ENTRIES
+         6️⃣ Ledger entries
       ------------------------------------------------------------ */
       await insertLedgerEntry({
         tenant_id,
@@ -165,7 +183,7 @@ export const SalaryController = {
       });
 
       /* ------------------------------------------------------------
-        DAYBOOK ENTRY
+         7️⃣ Daybook entry
       ------------------------------------------------------------ */
       await supabase.from("daybook").insert([
         {
