@@ -2,9 +2,9 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 
-export const generatePDF = ({ invoiceNumber, items, total, payment_method, subtotal }) => {
+export const generatePDF = ({ invoiceNumber, items, total, payment_method, subtotal,baseUrl }) => {
 
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
+ 
 
   return new Promise((resolve, reject) => {
     try {

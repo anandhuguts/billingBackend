@@ -434,6 +434,8 @@ import { generatePDF } from "../scripts/pdfGenerator.js";
  */
 export const createInvoice = async (req, res) => {
 
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+
   try {
     const tenant_id = req.user.tenant_id;
     const {
@@ -1160,7 +1162,8 @@ const pdfUrl = await generatePDF({
   items: itemsWithNames,
   total: total_amount,
   payment_method,
-  subtotal
+  subtotal,
+  baseUrl
 });
 
 
