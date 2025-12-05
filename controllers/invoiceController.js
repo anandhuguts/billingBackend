@@ -1,6 +1,6 @@
 // controllers/invoiceController.js
 import { supabase } from "../supabase/supabaseClient.js";
-import { applyDiscounts } from "../controllers/BillingController.js";
+import { applyDiscounts } from "../services/applyDiscountsService.js";
 
 // GET /api/invoices - Get all invoices with items
 // GET /api/invoices?page=1&limit=10
@@ -9,16 +9,14 @@ export const getAllInvoices = async (req, res) => {
     const tenant_id = req.user?.tenant_id;
     if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
 
-    // Pagination inputs
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 10;
+    const search = req.query.search?.trim() || "";
 
-    // Calculate range for Supabase
     const start = (page - 1) * limit;
     const end = start + limit - 1;
 
-    // Fetch paginated invoices
-    const { data: invoices, error } = await supabase
+    let query = supabase
       .from("invoices")
       .select(`
         *,
@@ -30,20 +28,48 @@ export const getAllInvoices = async (req, res) => {
             category,
             unit
           )
-        )
-      `, { count: "exact" })   // <-- 👈 GET TOTAL COUNT
+        ),
+        customers(name)
+      `, { count: "exact" })
       .eq("tenant_id", tenant_id)
       .order("created_at", { ascending: false })
       .range(start, end);
 
+    // ============================================
+    // 🔍 SEARCH SUPPORT
+    // ============================================
+    if (search) {
+      query = supabase
+        .from("invoices")
+        .select(`
+          *,
+          invoice_items (
+            *,
+            products(name, brand, category, unit)
+          ),
+          customers(name)
+        `, { count: "exact" })
+        .eq("tenant_id", tenant_id)
+        .or(`
+          invoice_number.ilike.%${search}%,
+          payment_method.ilike.%${search}%,
+          customers.name.ilike.%${search}%,
+          created_at.ilike.%${search}%
+        `)
+        .order("created_at", { ascending: false })
+        .range(start, end);
+    }
+
+    const { data: invoices, error, count } = await query;
     if (error) throw error;
 
     return res.json({
       success: true,
       page,
       limit,
-      total: invoices.length,
-      totalRecords: invoices?.length ? invoices[0].total_count : 0,
+      search,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
       data: invoices
     });
 
@@ -52,6 +78,7 @@ export const getAllInvoices = async (req, res) => {
     return res.status(500).json({ error: err.message || "Server Error" });
   }
 };
+
 
 
 // DELETE /api/invoices/:id - Delete invoice
@@ -110,7 +137,31 @@ export const previewInvoice = async (req, res) => {
     if (!items || items.length === 0)
       return res.status(400).json({ error: "No items provided" });
 
-    // Fetch customer if selected
+    // 1️⃣ FETCH price + tax from DB (IMPORTANT!)
+    const productIds = items.map(i => i.product_id);
+
+    const { data: productData, error: prodErr } = await supabase
+      .from("products")
+      .select("id, selling_price, tax, cost_price")
+      .in("id", productIds);
+
+    if (prodErr)
+      return res.status(500).json({ error: "Failed to fetch product info" });
+
+    const mergedItems = items.map((i) => {
+      const p = productData.find(x => x.id === i.product_id);
+      if (!p) throw new Error(`Product not found: ${i.product_id}`);
+
+      return {
+        product_id: i.product_id,
+        qty: i.qty,
+        price: Number(p.selling_price),
+        tax: Number(p.tax),
+        cost_price: Number(p.cost_price)
+      };
+    });
+
+    // 2️⃣ FETCH CUSTOMER IF ANY
     let customer = null;
     if (customer_id) {
       const { data, error } = await supabase
@@ -120,23 +171,19 @@ export const previewInvoice = async (req, res) => {
         .eq("tenant_id", tenant_id)
         .single();
 
-      if (error || !data) return res.status(404).json({ error: "Customer not found" });
+      if (error || !data)
+        return res.status(404).json({ error: "Customer not found" });
 
       customer = data;
     }
 
-    // Reuse discount engine (same as in createInvoice)
-    let discountResult;
-    try {
-      discountResult = await applyDiscounts({ 
-        items, 
-        tenant_id, 
-        customer, 
-        couponCode: coupon_code 
-      });
-    } catch (err) {
-      return res.status(400).json({ error: err.message });
-    }
+    // 3️⃣ APPLY DISCOUNTS (now we use mergedItems)
+    const discountResult = await applyDiscounts({
+      items: mergedItems,
+      tenant_id,
+      customer,
+      couponCode: coupon_code
+    });
 
     const {
       items: itemsWithDiscounts,
@@ -148,23 +195,27 @@ export const previewInvoice = async (req, res) => {
       total_before_redeem,
     } = discountResult;
 
-    // Estimate loyalty points (preview only)
-    let preview_loyalty_points = 0;
+    // 4️⃣ VAT BREAKDOWN
+    const vatItems = itemsWithDiscounts.map(it => ({
+      product_id: it.product_id,
+      tax_rate: it.tax,
+      taxAmount: it.taxAmount
+    }));
 
-    const { data: rule } = await supabase
-      .from("loyalty_rules")
-      .select("*")
-      .eq("tenant_id", tenant_id)
-      .eq("is_active", true)
-      .maybeSingle();
+    const vat_total = vatItems.reduce((s, it) => s + Number(it.taxAmount), 0);
 
-    if (rule) {
-      preview_loyalty_points = Math.floor(
-        (total_before_redeem / rule.currency_unit) * rule.points_per_currency
-      );
-    } else {
-      preview_loyalty_points = Math.floor(total_before_redeem / 100);
-    }
+    // 5️⃣ COGS Estimate
+    const cogs_estimate = mergedItems.reduce(
+      (sum, it) => sum + it.qty * it.cost_price,
+      0
+    );
+
+    // 6️⃣ EMPLOYEE DISCOUNT PREVIEW (always safe)
+    const employee_discount_preview = {
+      eligible: false,
+      discount_this_bill: 0,
+      remaining_this_month: 0,
+    };
 
     return res.json({
       success: true,
@@ -175,13 +226,21 @@ export const previewInvoice = async (req, res) => {
         bill_discount_total,
         coupon_discount_total,
         membership_discount_total,
-        preview_loyalty_points,
+        preview_loyalty_points: Math.floor(total_before_redeem / 100),
+        vat_breakdown: {
+          total_vat: vat_total,
+          items: vatItems
+        },
+        cogs_estimate,
+        employee_discount_preview
       },
       items: itemsWithDiscounts
     });
 
   } catch (err) {
     console.error("previewInvoice error:", err);
-    return res.status(500).json({ error: err.message || "Server error" });
+    return res.status(500).json({ error: err.message });
   }
 };
+
+

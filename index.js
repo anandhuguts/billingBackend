@@ -140,13 +140,13 @@ app.use("/api/accounts",
 
 app.use("/api/purchases",
   verifyToken,
-  requireRole("tenant"),
+  requireRole(["tenant", "staff"]),
   purchaseRoutes
 );
 
 app.use("/api/suppliers",
   verifyToken,
-  requireRole("tenant"),
+  requireRole(["tenant", "staff"]),
   supplierRoutes
 );
 

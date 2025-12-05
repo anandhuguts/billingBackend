@@ -15,33 +15,37 @@ export async function createDefaultCoaForTenant(tenant_id) {
   }
 
   const defaultAccounts = [
-    // Assets
+    // ASSETS
     { name: "Cash", type: "asset" },
     { name: "Bank", type: "asset" },
     { name: "Inventory", type: "asset" },
     { name: "Accounts Receivable", type: "asset" },
     { name: "VAT Input", type: "asset" },
-    { name: "Employee Advance", type: "asset" },   // NEW
+    { name: "Employee Advance", type: "asset" },
 
-    // Liabilities
+    // LIABILITIES
     { name: "Accounts Payable", type: "liability" },
     { name: "VAT Payable", type: "liability" },
 
-    // Income
+    // 🔥 REQUIRED FOR SALES RETURNS
+    { name: "VAT Output", type: "liability" },
+
+    // INCOME
     { name: "Sales", type: "income" },
 
-    // Expenses
+    // EXPENSES
     { name: "Cost of Goods Sold", type: "expense" },
+    { name: "COGS", type: "expense" }, // alias to prevent lookup mismatch
     { name: "Discount Expense", type: "expense" },
-    { name: "Salary Expense", type: "expense" },           // NEW
-    { name: "Staff Discount Expense", type: "expense" },   // NEW
+    { name: "Salary Expense", type: "expense" },
+    { name: "Staff Discount Expense", type: "expense" },
   ];
 
   const rows = defaultAccounts.map((acc) => ({
     tenant_id,
     name: acc.name,
     type: acc.type,
-    parent_id: null, // your schema supports null parent
+    parent_id: null,
   }));
 
   const { error: insertErr } = await supabase.from("coa").insert(rows);

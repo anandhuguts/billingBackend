@@ -37,15 +37,32 @@ export const getAllTenants = async (req, res) => {
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 10;
 
+    const search = req.query.search?.trim() || "";
+
     const start = (page - 1) * limit;
     const end = start + limit - 1;
 
-    // Query with count enabled
-    const { data, error, count } = await supabase
+    let query = supabase
       .from("tenants")
       .select("*", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(start, end);
+
+    // ==========================================
+    // 🔍 APPLY SEARCH
+    // ==========================================
+    if (search) {
+      query = supabase
+        .from("tenants")
+        .select("*", { count: "exact" })
+        .or(
+          `name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,id.eq.${search}`
+        )
+        .order("created_at", { ascending: false })
+        .range(start, end);
+    }
+
+    const { data, error, count } = await query;
 
     if (error) throw error;
 
@@ -53,9 +70,10 @@ export const getAllTenants = async (req, res) => {
       success: true,
       page,
       limit,
+      search,
       totalRecords: count || 0,
       totalPages: Math.ceil((count || 0) / limit),
-      data
+      data,
     });
 
   } catch (err) {
@@ -63,6 +81,7 @@ export const getAllTenants = async (req, res) => {
     return res.status(500).json({ error: err.message || "Server Error" });
   }
 };
+
 
 // GET single tenant
 // Fetch tenant with all associated AMC records

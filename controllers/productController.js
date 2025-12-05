@@ -63,26 +63,56 @@ export const getProducts = async (req, res) => {
     const tenant_id = req.user?.tenant_id;
     if (!tenant_id) return res.status(400).json({ error: "Missing tenant_id" });
 
-    const { search, limit = 100, offset = 0 } = req.query;
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 20;
+    const search = req.query.search?.trim() || "";
+
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
 
     let query = supabase
       .from("products")
-      .select("*")
+      .select("*", { count: "exact" })
       .eq("tenant_id", tenant_id)
-   
-      .range(Number(offset), Number(offset) + Number(limit) - 1);
+      .order("created_at", { ascending: false })
+      .range(start, end);
 
-    if (search) query = query.ilike("name", `%${search}%`);
+    // ===============================
+    // 🔍 SEARCH SUPPORT
+    // ===============================
+    if (search) {
+      query = supabase
+        .from("products")
+        .select("*", { count: "exact" })
+        .eq("tenant_id", tenant_id)
+        .or(`
+          name.ilike.%${search}%,
+          sku.ilike.%${search}%,
+          barcode.ilike.%${search}%
+        `)
+        .order("created_at", { ascending: false })
+        .range(start, end);
+    }
 
-    const { data, error } = await query;
+    const { data, count, error } = await query;
     if (error) throw error;
 
-    return res.json({ data });
+    return res.json({
+      success: true,
+      page,
+      limit,
+      search,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      data,
+    });
+
   } catch (err) {
     console.error("getProducts error:", err);
     return res.status(500).json({ error: err.message || "Server error" });
   }
 };
+
 
 // ✅ GET SINGLE PRODUCT BY ID
 export const getProductById = async (req, res) => {

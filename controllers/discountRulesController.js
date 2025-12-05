@@ -47,51 +47,60 @@ export const DiscountRulesController = {
   /* ======================================================
      CREATE DISCOUNT RULE
   ====================================================== */
-  async create(req, res) {
-    try {
-      const { tenant_id } = req.user;
-      const body = req.body;
+ async create(req, res) {
+  try {
+    const { tenant_id } = req.user;
+    const body = req.body;
 
-      if (!body.type) {
-        return res.status(400).json({ error: "Discount type is required" });
-      }
+    const allowedTypes = ["item", "bill", "coupon", "tier"];
 
-      // Coupon must have a code
-      if (body.type === "coupon" && !body.code) {
-        return res.status(400).json({ error: "Coupon code is required" });
-      }
+    // Validate type
+    if (!allowedTypes.includes(body.type)) {
+      return res.status(400).json({
+        error: `Invalid discount type. Allowed types: ${allowedTypes.join(", ")}`,
+      });
+    }
 
-      // Check duplicate coupon code per tenant
-      if (body.type === "coupon") {
-        const { data: exists } = await supabase
-          .from("discount_rules")
-          .select("id")
-          .eq("tenant_id", tenant_id)
-          .eq("code", body.code)
-          .single();
+    // Coupon must have a code
+    if (body.type === "coupon" && !body.code) {
+      return res.status(400).json({ error: "Coupon code is required" });
+    }
 
-        if (exists) {
-          return res.status(400).json({ error: "Coupon code already exists for this tenant" });
-        }
-      }
-
-      const { data, error } = await supabase
+    // Prevent duplicate coupon codes
+    if (body.type === "coupon") {
+      const { data: exists } = await supabase
         .from("discount_rules")
-        .insert([{ ...body, tenant_id }])
-        .select("*")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .eq("code", body.code)
         .single();
 
-      if (error) throw error;
-
-      return res.json({
-        success: true,
-        message: "Discount rule created",
-        data,
-      });
-    } catch (err) {
-      return res.status(500).json({ error: err.message });
+      if (exists) {
+        return res.status(400).json({
+          error: "Coupon code already exists for this tenant",
+        });
+      }
     }
-  },
+
+    const { data, error } = await supabase
+      .from("discount_rules")
+      .insert([{ ...body, tenant_id }])
+      .select("*")
+      .single();
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      message: "Discount rule created",
+      data,
+    });
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+},
+
 
   /* ======================================================
      UPDATE RULE

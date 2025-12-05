@@ -3,82 +3,65 @@ import { supabase } from "../supabase/supabaseClient.js";
 import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
+import { addJournalEntry } from "../services/addJournalEntryService.js";
+import { insertLedgerEntry } from "../services/insertLedgerEntryService.js";
+import { calculateEmployeeDiscount } from "../services/calculateEmployeeDiscountServices.js";
+import { applyDiscounts } from "../services/applyDiscountsService.js";
+import { generatePDF } from "../scripts/pdfGenerator.js";
 
 /**
  * Add a journal entry (double-entry)
  * debit_account = COA id
  * credit_account = COA id
  */
-async function addJournalEntry({
-  tenant_id,
-  debit_account,
-  credit_account,
-  amount,
-  description,
-  reference_id = null,
-  reference_type = "invoice",
-}) {
-  const { error } = await supabase.from("journal_entries").insert([
-    {
-      tenant_id,
-      debit_account,
-      credit_account,
-      amount,
-      description,
-      reference_id,
-      reference_type,
-    },
-  ]);
 
-  if (error) throw error;
-}
 
 /**
  * LEDGER entry with running balance by (tenant_id, account_type)
  * account_type is a string, like: 'inventory', 'vat_input', 'cash', 'accounts_payable'
  */
-async function insertLedgerEntry({
-  tenant_id,
-  account_type,
-  account_id = null,
-  entry_type,
-  description,
-  debit = 0,
-  credit = 0,
-  reference_id = null,
-}) {
-  const { data: lastRows, error: lastErr } = await supabase
-    .from("ledger_entries")
-    .select("id, balance")
-    .eq("tenant_id", tenant_id)
-    .eq("account_type", account_type)
-    .order("created_at", { ascending: false })
-    .limit(1);
+// async function insertLedgerEntry({
+//   tenant_id,
+//   account_type,
+//   account_id = null,
+//   entry_type,
+//   description,
+//   debit = 0,
+//   credit = 0,
+//   reference_id = null,
+// }) {
+//   const { data: lastRows, error: lastErr } = await supabase
+//     .from("ledger_entries")
+//     .select("id, balance")
+//     .eq("tenant_id", tenant_id)
+//     .eq("account_type", account_type)
+//     .order("created_at", { ascending: false })
+//     .limit(1);
 
-  let prevBalance = 0;
-  if (!lastErr && lastRows && lastRows.length > 0) {
-    prevBalance = Number(lastRows[0].balance || 0);
-  }
+//   let prevBalance = 0;
+//   if (!lastErr && lastRows && lastRows.length > 0) {
+//     prevBalance = Number(lastRows[0].balance || 0);
+//   }
 
-  const newBalance =
-    Number(prevBalance) + Number(debit || 0) - Number(credit || 0);
+//   const newBalance =
+//     Number(prevBalance) + Number(debit || 0) - Number(credit || 0);
 
-  const { error: insertErr } = await supabase.from("ledger_entries").insert([
-    {
-      tenant_id,
-      account_type,
-      account_id,
-      entry_type,
-      description,
-      debit,
-      credit,
-      balance: newBalance,
-      reference_id,
-    },
-  ]);
+//   const { error: insertErr } = await supabase.from("ledger_entries").insert([
+//     {
+//       tenant_id,
+//       account_type,
+//       account_id,
+//       entry_type,
+//       description,
+//       debit,
+//       credit,
+//       balance: newBalance,
+//       reference_id,
+//     },
+//   ]);
 
-  if (insertErr) throw insertErr;
-}
+//   if (insertErr) throw insertErr;
+// }
 
 /**
  * Discount engine: applyDiscounts
@@ -90,358 +73,358 @@ async function insertLedgerEntry({
 // ==============================
 // EMPLOYEE DISCOUNT CALCULATOR
 // ==============================
-async function calculateEmployeeDiscount({
-  tenant_id,
-  buyer_employee_id,
-  logged_in_user,
-  subtotal,
-  invoice_id
-}) {
-  // 1) Must provide employee_id in body
-  if (!buyer_employee_id) return { discount: 0 };
+// async function calculateEmployeeDiscount({
+//   tenant_id,
+//   buyer_employee_id,
+//   logged_in_user,
+//   subtotal,
+//   invoice_id
+// }) {
+//   // 1) Must provide employee_id in body
+//   if (!buyer_employee_id) return { discount: 0 };
 
-  // 2) Only the same employee can bill themselves
-  if (buyer_employee_id !== logged_in_user.id) return { discount: 0 };
+//   // 2) Only the same employee can bill themselves
+//   if (buyer_employee_id !== logged_in_user.id) return { discount: 0 };
 
-  // 3) Must be staff role
-  if (logged_in_user.role !== "staff") return { discount: 0 };
+//   // 3) Must be staff role
+//   if (logged_in_user.role !== "staff") return { discount: 0 };
 
-  // 4) Get employee discount rule
-  const { data: rules } = await supabase
-    .from("employee_discount_rules")
-    .select("*")
-    .eq("tenant_id", tenant_id)
-    .eq("is_active", true)
-    .limit(1);
+//   // 4) Get employee discount rule
+//   const { data: rules } = await supabase
+//     .from("employee_discount_rules")
+//     .select("*")
+//     .eq("tenant_id", tenant_id)
+//     .eq("is_active", true)
+//     .limit(1);
 
-  if (!rules?.length) return { discount: 0 };
-  const rule = rules[0];
+//   if (!rules?.length) return { discount: 0 };
+//   const rule = rules[0];
 
-  // Base discount
-  let discount = (subtotal * Number(rule.discount_percent || 0)) / 100;
+//   // Base discount
+//   let discount = (subtotal * Number(rule.discount_percent || 0)) / 100;
 
-  // Per bill max
-  if (rule.max_discount_amount && discount > rule.max_discount_amount) {
-    discount = rule.max_discount_amount;
-  }
+//   // Per bill max
+//   if (rule.max_discount_amount && discount > rule.max_discount_amount) {
+//     discount = rule.max_discount_amount;
+//   }
 
-  // Monthly limit check
-  if (rule.monthly_limit) {
-    const now = new Date();
-    const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const next = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString();
+//   // Monthly limit check
+//   if (rule.monthly_limit) {
+//     const now = new Date();
+//     const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+//     const next = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString();
 
-    const { data: used } = await supabase
-      .from("employee_discount_usage")
-      .select("discount_amount")
-      .eq("tenant_id", tenant_id)
-      .eq("employee_id", buyer_employee_id)
-      .gte("used_at", start)
-      .lt("used_at", next);
+//     const { data: used } = await supabase
+//       .from("employee_discount_usage")
+//       .select("discount_amount")
+//       .eq("tenant_id", tenant_id)
+//       .eq("employee_id", buyer_employee_id)
+//       .gte("used_at", start)
+//       .lt("used_at", next);
 
-    const usedAmt = used?.reduce((t, r) => t + Number(r.discount_amount), 0) || 0;
-    const remaining = rule.monthly_limit - usedAmt;
+//     const usedAmt = used?.reduce((t, r) => t + Number(r.discount_amount), 0) || 0;
+//     const remaining = rule.monthly_limit - usedAmt;
 
-    if (remaining <= 0) discount = 0;
-    else if (discount > remaining) discount = remaining;
-  }
+//     if (remaining <= 0) discount = 0;
+//     else if (discount > remaining) discount = remaining;
+//   }
 
-  // Insert TEMP record (invoice_id assigned later)
- if (discount > 0 && buyer_employee_id === logged_in_user.id) {
-    await supabase.from("employee_discount_usage").insert([
-      {
-        tenant_id,
-        employee_id: buyer_employee_id,
-        invoice_id,
-        discount_amount: discount,
-      },
-    ]);
-  }
+//   // Insert TEMP record (invoice_id assigned later)
+//  if (discount > 0 && buyer_employee_id === logged_in_user.id) {
+//     await supabase.from("employee_discount_usage").insert([
+//       {
+//         tenant_id,
+//         employee_id: buyer_employee_id,
+//         invoice_id,
+//         discount_amount: discount,
+//       },
+//     ]);
+//   }
 
-  return { discount };
-}
+//   return { discount };
+// }
 
 
-export async function applyDiscounts({
-  items,
-  tenant_id,
-  customer = null,
-  couponCode = null,
-}) {
-  // fetch active discount rules for tenant
-  const { data: rules = [], error: rulesErr } = await supabase
-    .from("discount_rules")
-    .select("*")
-    .eq("tenant_id", tenant_id)
-    .eq("is_active", true);
+// export async function applyDiscounts({
+//   items,
+//   tenant_id,
+//   customer = null,
+//   couponCode = null,
+// }) {
+//   // fetch active discount rules for tenant
+//   const { data: rules = [], error: rulesErr } = await supabase
+//     .from("discount_rules")
+//     .select("*")
+//     .eq("tenant_id", tenant_id)
+//     .eq("is_active", true);
 
-  if (rulesErr) throw rulesErr;
+//   if (rulesErr) throw rulesErr;
 
-  const itemRules = rules.filter((r) => r.type === "item");
-  const billRules = rules.filter((r) => r.type === "bill");
-  const couponRules = rules.filter((r) => r.type === "coupon");
-  const tierRules = rules.filter((r) => r.type === "tier");
+//   const itemRules = rules.filter((r) => r.type === "item");
+//   const billRules = rules.filter((r) => r.type === "bill");
+//   const couponRules = rules.filter((r) => r.type === "coupon");
+//   const tierRules = rules.filter((r) => r.type === "tier");
 
-  // normalize items
-  // price = inclusive selling price per unit
-  const workingItems = items.map((it) => {
-    const unitGross = Number(it.price || 0); // inclusive per unit
-    const qty = Number(it.qty || 0);
-    const taxPercent = Number(it.tax || 0);
+//   // normalize items
+//   // price = inclusive selling price per unit
+//   const workingItems = items.map((it) => {
+//     const unitGross = Number(it.price || 0); // inclusive per unit
+//     const qty = Number(it.qty || 0);
+//     const taxPercent = Number(it.tax || 0);
 
-    const divisor = 1 + taxPercent / 100;
-    let unitBase = unitGross;
-    let unitTax = 0;
+//     const divisor = 1 + taxPercent / 100;
+//     let unitBase = unitGross;
+//     let unitTax = 0;
 
-    if (taxPercent > 0) {
-      unitBase = unitGross / divisor;
-      unitTax = unitGross - unitBase;
-    }
+//     if (taxPercent > 0) {
+//       unitBase = unitGross / divisor;
+//       unitTax = unitGross - unitBase;
+//     }
 
-    const lineGross = unitGross * qty; // inclusive total (before item discount)
-    const lineBase = unitBase * qty;
-    const lineTax = unitTax * qty;
+//     const lineGross = unitGross * qty; // inclusive total (before item discount)
+//     const lineBase = unitBase * qty;
+//     const lineTax = unitTax * qty;
 
-    return {
-      ...it,
-      qty,
-      unitGross,
-      taxPercent,
-      unitBase,
-      unitTax,
-      lineGross,
-      lineBase,
-      lineTax,
-      lineDiscount: 0, // total discount for the line (not per-unit)
-      perUnitDiscount: 0,
-      netUnitGross: unitGross,
-      netLineGross: lineGross,
-      netLineBase: lineBase,
-      netLineTax: lineTax,
-    };
-  });
+//     return {
+//       ...it,
+//       qty,
+//       unitGross,
+//       taxPercent,
+//       unitBase,
+//       unitTax,
+//       lineGross,
+//       lineBase,
+//       lineTax,
+//       lineDiscount: 0, // total discount for the line (not per-unit)
+//       perUnitDiscount: 0,
+//       netUnitGross: unitGross,
+//       netLineGross: lineGross,
+//       netLineBase: lineBase,
+//       netLineTax: lineTax,
+//     };
+//   });
 
-  const invoiceDiscounts = [];
+//   const invoiceDiscounts = [];
 
-  // -----------------------------------------
-  // 1) ITEM-LEVEL DISCOUNTS (on inclusive line total)
-  // -----------------------------------------
-  for (const rule of itemRules) {
-    for (const it of workingItems) {
-      if (
-        rule.product_id &&
-        Number(rule.product_id) === Number(it.product_id)
-      ) {
-        let extraLineDiscount = 0;
+//   // -----------------------------------------
+//   // 1) ITEM-LEVEL DISCOUNTS (on inclusive line total)
+//   // -----------------------------------------
+//   for (const rule of itemRules) {
+//     for (const it of workingItems) {
+//       if (
+//         rule.product_id &&
+//         Number(rule.product_id) === Number(it.product_id)
+//       ) {
+//         let extraLineDiscount = 0;
 
-        if (Number(rule.discount_percent || 0) > 0) {
-          extraLineDiscount =
-            (it.lineGross * Number(rule.discount_percent)) / 100;
-        } else if (Number(rule.discount_amount || 0) > 0) {
-          extraLineDiscount = Number(rule.discount_amount) * it.qty;
-        }
+//         if (Number(rule.discount_percent || 0) > 0) {
+//           extraLineDiscount =
+//             (it.lineGross * Number(rule.discount_percent)) / 100;
+//         } else if (Number(rule.discount_amount || 0) > 0) {
+//           extraLineDiscount = Number(rule.discount_amount) * it.qty;
+//         }
 
-        const remaining = it.lineGross - it.lineDiscount;
-        extraLineDiscount = Math.max(0, Math.min(extraLineDiscount, remaining));
+//         const remaining = it.lineGross - it.lineDiscount;
+//         extraLineDiscount = Math.max(0, Math.min(extraLineDiscount, remaining));
 
-        it.lineDiscount += extraLineDiscount;
-      }
-    }
-  }
+//         it.lineDiscount += extraLineDiscount;
+//       }
+//     }
+//   }
 
-  // recompute per-unit and net values AFTER item discounts
-  for (const it of workingItems) {
-    if (it.qty > 0) {
-      it.perUnitDiscount = it.lineDiscount / it.qty;
-      it.netUnitGross = it.unitGross - it.perUnitDiscount;
-      it.netLineGross = it.netUnitGross * it.qty;
+//   // recompute per-unit and net values AFTER item discounts
+//   for (const it of workingItems) {
+//     if (it.qty > 0) {
+//       it.perUnitDiscount = it.lineDiscount / it.qty;
+//       it.netUnitGross = it.unitGross - it.perUnitDiscount;
+//       it.netLineGross = it.netUnitGross * it.qty;
 
-      const divisor = 1 + it.taxPercent / 100;
-      if (it.taxPercent > 0) {
-        it.netLineBase = it.netLineGross / divisor;
-        it.netLineTax = it.netLineGross - it.netLineBase;
-      } else {
-        it.netLineBase = it.netLineGross;
-        it.netLineTax = 0;
-      }
-    } else {
-      it.perUnitDiscount = 0;
-      it.netUnitGross = it.unitGross;
-      it.netLineGross = it.lineGross;
-      it.netLineBase = it.lineBase;
-      it.netLineTax = it.lineTax;
-    }
-  }
+//       const divisor = 1 + it.taxPercent / 100;
+//       if (it.taxPercent > 0) {
+//         it.netLineBase = it.netLineGross / divisor;
+//         it.netLineTax = it.netLineGross - it.netLineBase;
+//       } else {
+//         it.netLineBase = it.netLineGross;
+//         it.netLineTax = 0;
+//       }
+//     } else {
+//       it.perUnitDiscount = 0;
+//       it.netUnitGross = it.unitGross;
+//       it.netLineGross = it.lineGross;
+//       it.netLineBase = it.lineBase;
+//       it.netLineTax = it.lineTax;
+//     }
+//   }
 
-  const subtotal = workingItems.reduce((s, it) => s + it.lineGross, 0);
-  const item_discount_total = workingItems.reduce(
-    (s, it) => s + it.lineDiscount,
-    0
-  );
-  let total_after_item = Number((subtotal - item_discount_total).toFixed(2));
+//   const subtotal = workingItems.reduce((s, it) => s + it.lineGross, 0);
+//   const item_discount_total = workingItems.reduce(
+//     (s, it) => s + it.lineDiscount,
+//     0
+//   );
+//   let total_after_item = Number((subtotal - item_discount_total).toFixed(2));
 
-  // -----------------------------------------
-  // 2) BILL-LEVEL DISCOUNT
-  // -----------------------------------------
-  let bill_discount_total = 0;
+//   // -----------------------------------------
+//   // 2) BILL-LEVEL DISCOUNT
+//   // -----------------------------------------
+//   let bill_discount_total = 0;
 
-  for (const rule of billRules) {
-    if (
-      rule.min_bill_amount &&
-      total_after_item < Number(rule.min_bill_amount)
-    ) {
-      continue;
-    }
+//   for (const rule of billRules) {
+//     if (
+//       rule.min_bill_amount &&
+//       total_after_item < Number(rule.min_bill_amount)
+//     ) {
+//       continue;
+//     }
 
-    let amt = 0;
+//     let amt = 0;
 
-    if (Number(rule.discount_percent || 0) > 0) {
-      amt = (total_after_item * Number(rule.discount_percent)) / 100;
-    } else if (Number(rule.discount_amount || 0) > 0) {
-      amt = Number(rule.discount_amount);
-    }
+//     if (Number(rule.discount_percent || 0) > 0) {
+//       amt = (total_after_item * Number(rule.discount_percent)) / 100;
+//     } else if (Number(rule.discount_amount || 0) > 0) {
+//       amt = Number(rule.discount_amount);
+//     }
 
-    amt = Math.max(0, Math.min(amt, total_after_item - bill_discount_total));
+//     amt = Math.max(0, Math.min(amt, total_after_item - bill_discount_total));
 
-    if (amt > 0) {
-      bill_discount_total = Number((bill_discount_total + amt).toFixed(2));
-      invoiceDiscounts.push({
-        rule_id: rule.id,
-        amount: Number(amt.toFixed(2)),
-        description: `Bill discount rule ${rule.id}`,
-      });
-    }
-  }
+//     if (amt > 0) {
+//       bill_discount_total = Number((bill_discount_total + amt).toFixed(2));
+//       invoiceDiscounts.push({
+//         rule_id: rule.id,
+//         amount: Number(amt.toFixed(2)),
+//         description: `Bill discount rule ${rule.id}`,
+//       });
+//     }
+//   }
 
-  let total_after_bill = Number(
-    (total_after_item - bill_discount_total).toFixed(2)
-  );
+//   let total_after_bill = Number(
+//     (total_after_item - bill_discount_total).toFixed(2)
+//   );
 
-  // -----------------------------------------
-  // 3) COUPON DISCOUNT
-  // -----------------------------------------
-  let coupon_discount_total = 0;
-  let appliedCouponRule = null;
+//   // -----------------------------------------
+//   // 3) COUPON DISCOUNT
+//   // -----------------------------------------
+//   let coupon_discount_total = 0;
+//   let appliedCouponRule = null;
 
-  if (couponCode) {
-    const rule = couponRules.find(
-      (r) =>
-        r.code &&
-        String(r.code).toLowerCase() === String(couponCode).toLowerCase()
-    );
+//   if (couponCode) {
+//     const rule = couponRules.find(
+//       (r) =>
+//         r.code &&
+//         String(r.code).toLowerCase() === String(couponCode).toLowerCase()
+//     );
 
-    if (!rule) throw new Error("Invalid coupon code");
+//     if (!rule) throw new Error("Invalid coupon code");
 
-    if (Number(rule.min_bill_amount || 0) > total_after_bill) {
-      throw new Error("Coupon minimum bill not satisfied");
-    }
+//     if (Number(rule.min_bill_amount || 0) > total_after_bill) {
+//       throw new Error("Coupon minimum bill not satisfied");
+//     }
 
-    if (rule.max_uses) {
-      const { data: uses } = await supabase
-        .from("coupon_usage")
-        .select("id")
-        .eq("coupon_id", rule.id);
+//     if (rule.max_uses) {
+//       const { data: uses } = await supabase
+//         .from("coupon_usage")
+//         .select("id")
+//         .eq("coupon_id", rule.id);
 
-      if (uses && uses.length >= rule.max_uses)
-        throw new Error("Coupon usage limit reached");
-    }
+//       if (uses && uses.length >= rule.max_uses)
+//         throw new Error("Coupon usage limit reached");
+//     }
 
-    if (Number(rule.discount_percent || 0) > 0) {
-      coupon_discount_total = Number(
-        ((total_after_bill * Number(rule.discount_percent)) / 100).toFixed(2)
-      );
-    } else if (Number(rule.discount_amount || 0) > 0) {
-      coupon_discount_total = Math.min(
-        Number(rule.discount_amount),
-        total_after_bill
-      );
-    }
+//     if (Number(rule.discount_percent || 0) > 0) {
+//       coupon_discount_total = Number(
+//         ((total_after_bill * Number(rule.discount_percent)) / 100).toFixed(2)
+//       );
+//     } else if (Number(rule.discount_amount || 0) > 0) {
+//       coupon_discount_total = Math.min(
+//         Number(rule.discount_amount),
+//         total_after_bill
+//       );
+//     }
 
-    if (coupon_discount_total > 0) {
-      appliedCouponRule = rule;
-      invoiceDiscounts.push({
-        rule_id: rule.id,
-        amount: coupon_discount_total,
-        description: `Coupon ${rule.code}`,
-      });
-    }
-  }
+//     if (coupon_discount_total > 0) {
+//       appliedCouponRule = rule;
+//       invoiceDiscounts.push({
+//         rule_id: rule.id,
+//         amount: coupon_discount_total,
+//         description: `Coupon ${rule.code}`,
+//       });
+//     }
+//   }
 
-  let total_after_coupon = Number(
-    (total_after_bill - coupon_discount_total).toFixed(2)
-  );
+//   let total_after_coupon = Number(
+//     (total_after_bill - coupon_discount_total).toFixed(2)
+//   );
 
-  // -----------------------------------------
-  // 4) MEMBERSHIP TIER DISCOUNT
-  // -----------------------------------------
-  let membership_discount_total = 0;
+//   // -----------------------------------------
+//   // 4) MEMBERSHIP TIER DISCOUNT
+//   // -----------------------------------------
+//   let membership_discount_total = 0;
 
-  if (customer && customer.membership_tier) {
-    const tierRule = tierRules.find(
-      (tr) =>
-        tr.tier &&
-        String(tr.tier).toLowerCase() ===
-          String(customer.membership_tier).toLowerCase()
-    );
+//   if (customer && customer.membership_tier) {
+//     const tierRule = tierRules.find(
+//       (tr) =>
+//         tr.tier &&
+//         String(tr.tier).toLowerCase() ===
+//           String(customer.membership_tier).toLowerCase()
+//     );
 
-    if (tierRule) {
-      if (Number(tierRule.discount_percent || 0) > 0) {
-        membership_discount_total = Number(
-          (
-            (total_after_coupon * Number(tierRule.discount_percent)) /
-            100
-          ).toFixed(2)
-        );
-      } else if (Number(tierRule.discount_amount || 0) > 0) {
-        membership_discount_total = Math.min(
-          Number(tierRule.discount_amount),
-          total_after_coupon
-        );
-      }
+//     if (tierRule) {
+//       if (Number(tierRule.discount_percent || 0) > 0) {
+//         membership_discount_total = Number(
+//           (
+//             (total_after_coupon * Number(tierRule.discount_percent)) /
+//             100
+//           ).toFixed(2)
+//         );
+//       } else if (Number(tierRule.discount_amount || 0) > 0) {
+//         membership_discount_total = Math.min(
+//           Number(tierRule.discount_amount),
+//           total_after_coupon
+//         );
+//       }
 
-      if (membership_discount_total > 0) {
-        invoiceDiscounts.push({
-          rule_id: tierRule.id,
-          amount: membership_discount_total,
-          description: `Membership ${tierRule.tier} discount`,
-        });
-      }
-    }
-  }
+//       if (membership_discount_total > 0) {
+//         invoiceDiscounts.push({
+//           rule_id: tierRule.id,
+//           amount: membership_discount_total,
+//           description: `Membership ${tierRule.tier} discount`,
+//         });
+//       }
+//     }
+//   }
 
-  const total_after_membership = Number(
-    (total_after_coupon - membership_discount_total).toFixed(2)
-  );
-  const total_before_redeem = Number(total_after_membership.toFixed(2));
+//   const total_after_membership = Number(
+//     (total_after_coupon - membership_discount_total).toFixed(2)
+//   );
+//   const total_before_redeem = Number(total_after_membership.toFixed(2));
 
-  // -----------------------------------------
-  // RETURN FINAL STRUCTURE
-  // discount_amount = per-unit discount
-  // net_price = per-unit net inclusive price
-  // taxAmount = tax AFTER item discount
-  // -----------------------------------------
-  return {
-    items: workingItems.map((it) => ({
-      product_id: it.product_id,
-      qty: it.qty,
-      price: Number(it.unitGross.toFixed(2)), // inclusive per unit
-      tax: it.taxPercent,
-      lineBase: Number(it.netLineBase.toFixed(2)),
-      taxAmount: Number(it.netLineTax.toFixed(2)),
-      baseWithTax: Number(it.netLineGross.toFixed(2)),
-      discount_amount: Number((it.perUnitDiscount || 0).toFixed(2)),
-      net_price: Number((it.netUnitGross || it.unitGross).toFixed(2)),
-    })),
-    subtotal: Number(subtotal.toFixed(2)),
-    item_discount_total: Number(item_discount_total.toFixed(2)),
-    bill_discount_total: Number(bill_discount_total.toFixed(2)),
-    coupon_discount_total: Number(coupon_discount_total.toFixed(2)),
-    membership_discount_total: Number(membership_discount_total.toFixed(2)),
-    total_before_redeem,
-    invoiceDiscounts,
-    appliedCouponRule,
-  };
-}
+//   // -----------------------------------------
+//   // RETURN FINAL STRUCTURE
+//   // discount_amount = per-unit discount
+//   // net_price = per-unit net inclusive price
+//   // taxAmount = tax AFTER item discount
+//   // -----------------------------------------
+//   return {
+//     items: workingItems.map((it) => ({
+//       product_id: it.product_id,
+//       qty: it.qty,
+//       price: Number(it.unitGross.toFixed(2)), // inclusive per unit
+//       tax: it.taxPercent,
+//       lineBase: Number(it.netLineBase.toFixed(2)),
+//       taxAmount: Number(it.netLineTax.toFixed(2)),
+//       baseWithTax: Number(it.netLineGross.toFixed(2)),
+//       discount_amount: Number((it.perUnitDiscount || 0).toFixed(2)),
+//       net_price: Number((it.netUnitGross || it.unitGross).toFixed(2)),
+//     })),
+//     subtotal: Number(subtotal.toFixed(2)),
+//     item_discount_total: Number(item_discount_total.toFixed(2)),
+//     bill_discount_total: Number(bill_discount_total.toFixed(2)),
+//     coupon_discount_total: Number(coupon_discount_total.toFixed(2)),
+//     membership_discount_total: Number(membership_discount_total.toFixed(2)),
+//     total_before_redeem,
+//     invoiceDiscounts,
+//     appliedCouponRule,
+//   };
+// }
 
 /**
  * Full createInvoice
@@ -450,8 +433,7 @@ export async function applyDiscounts({
  * - accounting (Sales, VAT, COGS, Inventory)
  */
 export const createInvoice = async (req, res) => {
-  console.log("REQ USER DEBUG =>", req.user);
-console.log("AUTH HEADER =>", req.headers.authorization);
+
   try {
     const tenant_id = req.user.tenant_id;
     const {
@@ -1170,25 +1152,39 @@ const productMap = {};
       name: productMap[it.product_id] || "Unknown",
     }));
 
+    // -------------------------------------------
+// 14) GENERATE RECEIPT PDF (BACKEND VERSION)
+// -------------------------------------------
+const pdfUrl = await generatePDF({
+  invoiceNumber: invoice_number,
+  items: itemsWithNames,
+  total: total_amount,
+  payment_method,
+  subtotal
+});
+
+
     // Final response
-    return res.status(201).json({
-      message: "Invoice created successfully",
-     invoice: {
+  return res.status(201).json({
+  message: "Invoice created successfully",
+  invoice: {
     ...invoice,
     ...updatedInvoice,
     subtotal,
-    final_amount: total_amount
+    final_amount: total_amount,
+    pdf_url: pdfUrl
   },
-      items: itemsWithNames,
-      lowStockAlerts,
-      loyalty: isLoyaltyCustomer
-        ? {
-            earned: earn_points,
-            redeemed: redeem_points,
-            final_balance: currentPoints,
-          }
-        : null,
-    });
+  items: itemsWithNames,
+  lowStockAlerts,
+  loyalty: isLoyaltyCustomer
+    ? {
+        earned: earn_points,
+        redeemed: redeem_points,
+        final_balance: currentPoints,
+      }
+    : null,
+});
+
   } catch (err) {
     console.error("createInvoice error:", err);
     return res.status(500).json({ error: err.message || "Server error" });
@@ -1198,54 +1194,138 @@ const productMap = {};
 /**
  * generatePDF (unchanged)
  */
-export const generatePDF = async (req, res) => {
-  try {
-    const { invoiceNumber, items, subtotal, total, payment_method } = req.body;
+// export const generatePDF = async (req, res) => {
+//   try {
+//     const { invoiceNumber, items, subtotal, total, payment_method } = req.body;
 
-    const invoicesDir = path.join(process.cwd(), "invoices");
-    if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir);
+//     const invoicesDir = path.join(process.cwd(), "invoices");
+//     if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir);
 
-    const filePath = path.join(invoicesDir, `invoice-${invoiceNumber}.pdf`);
-    const doc = new PDFDocument({ margin: 40 });
-    const stream = fs.createWriteStream(filePath);
-    doc.pipe(stream);
+//     const filePath = path.join(invoicesDir, `invoice-${invoiceNumber}.pdf`);
 
-    doc.fontSize(18).text("SUPERMART", { align: "center" }).moveDown(0.5);
-    doc.fontSize(10).text(`Invoice No: ${invoiceNumber}`);
-    doc.text(`Date: ${new Date().toLocaleString()}`);
-    doc.moveDown(1);
-    doc.text("========================================", {
-      align: "center",
-    });
+//     // 80mm thermal = approx 226 pts width, height variable
+//     const doc = new PDFDocument({
+//       size: [226, 600],
+//       margin: 10,
+//     });
 
-    items.forEach((item) => {
-      doc.text(`${item.qty}x ${item.name} - AED ${item.total.toFixed(2)}`);
-    });
+//     const stream = fs.createWriteStream(filePath);
+//     doc.pipe(stream);
 
-    doc.moveDown(1);
-    doc.text("========================================", {
-      align: "center",
-    });
+//     let y = 10;
 
-    doc.text(`Subtotal: AED ${subtotal.toFixed(2)}`);
-    doc.text(`Payment Method: ${payment_method}`);
-    doc.fontSize(14).text(`Total: AED ${total.toFixed(2)}`, { align: "right" });
+//     const center = (text, size = 10, font = "Courier") => {
+//       doc.font(font).fontSize(size);
+//       doc.text(text, 0, y, { width: 226, align: "center" });
+//       y += size + 2;
+//     };
 
-    doc.moveDown(1.5);
-    doc.fontSize(10).text("Thank you for shopping with us!", {
-      align: "center",
-    });
+//     const line = () => {
+//       doc
+//         .font("Courier")
+//         .fontSize(9)
+//         .text("----------------------------------------", 0, y, {
+//           width: 226,
+//           align: "center",
+//         });
+//       y += 12;
+//     };
 
-    doc.end();
+//     const starLine = () => {
+//       doc
+//         .font("Courier")
+//         .fontSize(10)
+//         .text("********************************", 0, y, {
+//           width: 226,
+//           align: "center",
+//         });
+//       y += 14;
+//     };
 
-    stream.on("finish", () => {
-      res.status(200).json({
-        message: "Invoice PDF generated",
-        pdf_url: `http://localhost:5000/invoices/invoice-${invoiceNumber}.pdf`,
-      });
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to generate invoice PDF" });
-  }
-};
+//     // ⭐ Top Stars
+//     starLine();
+
+//     // ⭐ Store Name
+//     center("SUPERMART", 16);
+
+//     // ⭐ Bottom Stars
+//     starLine();
+
+//     // Invoice details
+//     doc.font("Courier").fontSize(9).text(`Invoice No: ${invoiceNumber}`, 10, y);
+//     y += 12;
+
+//     doc
+//       .font("Courier")
+//       .fontSize(9)
+//       .text(`Date: ${new Date().toLocaleString()}`, 10, y);
+//     y += 14;
+
+//     // Divider
+//     line();
+
+//     // Items
+//     doc.font("Courier").fontSize(10);
+
+//     items.forEach((item) => {
+//       const name = `${item.qty}x ${item.name}`;
+//       const price = `AED ${Number(item.total).toFixed(2)}`;
+
+//       doc.text(name, 10, y);
+//       doc.text(price, -10, y, { align: "right" });
+//       y += 14;
+//     });
+
+//     // Divider
+//     y += 2;
+//     line();
+
+//     // TOTAL bold
+//     doc.font("Courier-Bold").fontSize(11);
+//     doc.text("TOTAL:", 10, y);
+//     doc.text(`AED ${total.toFixed(2)}`, -10, y, { align: "right" });
+//     y += 16;
+
+//     // Payment Method
+//     doc.font("Courier").fontSize(10);
+//     doc.text("Payment Method:", 10, y);
+//     doc.text(payment_method.toUpperCase(), -10, y, { align: "right" });
+//     y += 14;
+
+//     // Divider
+//     line();
+
+//     // Thank you
+//     doc.font("Courier-Bold").fontSize(10);
+//     center("********* THANK YOU! *********", 10);
+
+//     y += 10;
+
+//     // Simple barcode mimic
+//     const barStartX = 40;
+//     const barWidth = 100;
+
+//     for (let i = 0; i < 40; i++) {
+//       const x = barStartX + i * 2.2;
+//       const lineW = Math.random() > 0.5 ? 1.2 : 0.6;
+
+//       doc
+//         .moveTo(x, y)
+//         .lineTo(x, y + 25)
+//         .lineWidth(lineW)
+//         .stroke();
+//     }
+
+//     doc.end();
+
+//     stream.on("finish", () => {
+//       res.status(200).json({
+//         message: "Invoice PDF generated",
+//         pdf_url: `http://localhost:5000/invoices/invoice-${invoiceNumber}.pdf`,
+//       });
+//     });
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ error: "Failed to generate invoice PDF" });
+//   }
+// };

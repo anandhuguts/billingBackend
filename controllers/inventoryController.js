@@ -45,9 +45,16 @@ export const createInventory = async (req, res) => {
 export const getInventory = async (req, res) => {
   try {
     const tenant_id = req.user.tenant_id;
-    const { search, limit = 100, offset = 0 } = req.query;
 
-    let q = supabase
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 20;
+    const search = req.query.search?.trim() || "";
+
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
+
+    // Base query
+    let query = supabase
       .from("inventory")
       .select(
         `
@@ -58,9 +65,7 @@ export const getInventory = async (req, res) => {
         product_id,
         expiry_date,
         max_stock,
-        
         products (
-         
           name,
           category,
           brand,
@@ -70,41 +75,89 @@ export const getInventory = async (req, res) => {
           tax,
           barcode,
           sku
-          
-          
         )
-      `
+      `,
+        { count: "exact" }
       )
       .eq("tenant_id", tenant_id)
       .order("updated_at", { ascending: false })
-      .range(Number(offset), Number(offset) + Number(limit) - 1);
+      .range(start, end);
 
+    // ==========================================
+    // 🔍 SEARCH LOGIC
+    // ==========================================
+    // Supabase cannot search nested columns directly in join,
+    // so we filter using RPC-style OR logic by referencing the foreign table.
     if (search) {
-      // Supabase doesn't allow direct ilike on joined fields, so you may filter client-side
-      q = q.ilike("products.name", `%${search}%`);
+      query = supabase
+        .from("inventory")
+        .select(
+          `
+          id,
+          quantity,
+          reorder_level,
+          updated_at,
+          product_id,
+          expiry_date,
+          max_stock,
+          products (
+            name,
+            category,
+            brand,
+            unit,
+            cost_price,
+            selling_price,
+            tax,
+            barcode,
+            sku
+          )
+        `,
+          { count: "exact" }
+        )
+        .eq("tenant_id", tenant_id)
+        .or(`
+          products.name.ilike.%${search}%,
+          products.sku.ilike.%${search}%,
+          products.barcode.ilike.%${search}%,
+          products.brand.ilike.%${search}%,
+          products.category.ilike.%${search}%
+        `)
+        .order("updated_at", { ascending: false })
+        .range(start, end);
     }
 
-    const { data, error } = await q;
+    const { data, count, error } = await query;
     if (error) throw error;
 
-    // 🧩 Flatten joined data so it matches your frontend object structure
+    // Flatten output
     const formatted = data.map((item) => ({
-      id: item.id, // rename to avoid confusion
-      product_id: item.product_id, // ✅ keep original
+      id: item.id,
+      product_id: item.product_id,
       quantity: item.quantity,
       reorderLevel: item.reorder_level,
       updatedAt: item.updated_at,
       expiryDate: item.expiry_date,
       maxStock: item.max_stock,
+
+      // Product table fields
       ...item.products,
     }));
 
-    return res.json({ data: formatted });
+    return res.json({
+      success: true,
+      page,
+      limit,
+      search,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      data: formatted,
+    });
   } catch (err) {
     console.error("getInventory error:", err);
     return res.status(500).json({ error: err.message || "Server error" });
   }
 };
+
 
 // Update inventory (only for items belonging to tenant)
 export const updateInventory = async (req, res) => {

@@ -1,6 +1,7 @@
 import express from "express";
-import { createInvoice, generatePDF } from "../controllers/BillingController.js";
+import { createInvoice} from "../controllers/BillingController.js";
 import { verifyToken } from "../middleware/verifyToken.js";
+import { generatePDF } from "../scripts/pdfGenerator.js";
 
 
 const router = express.Router();
