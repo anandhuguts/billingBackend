@@ -435,7 +435,7 @@ import { generatePDF } from "../scripts/pdfGenerator.js";
 export const createInvoice = async (req, res) => {
 
   const baseUrl = `${req.protocol}://${req.get("host")}`;
-
+const businessName = req.user.full_name|| "SUPERMART";
   try {
     const tenant_id = req.user.tenant_id;
     const {
@@ -613,7 +613,7 @@ const { discount: employee_discount_total } = await calculateEmployeeDiscount({
 // ===========================
 // 4) INSERT INVOICE (DEBUG LOGGING)
 // ===========================
-console.log("📌 STARTING INVOICE INSERT...");
+
 
 const insertPayload = {
   tenant_id,
@@ -629,7 +629,7 @@ const insertPayload = {
   final_amount: total_amount,
 };
 
-console.log("📦 INSERT PAYLOAD =>", insertPayload);
+
 
 const insertResult = await supabase
   .from("invoices")
@@ -637,7 +637,7 @@ const insertResult = await supabase
   .select("*")
   .maybeSingle();
 
-console.log("🧾 INSERT RESULT =>", insertResult);
+
 
 const invoice = insertResult.data;
 const invoiceErr = insertResult.error;
@@ -652,7 +652,7 @@ if (!invoice) {
   return res.status(500).json({ error: "Invoice insert returned null. Check console." });
 }
 
-console.log("✅ INSERTED INVOICE =>", invoice);
+
 
 
       // === UPDATE EMPLOYEE DISCOUNT USAGE WITH INVOICE ID ===
@@ -1163,7 +1163,8 @@ const pdfUrl = await generatePDF({
   total: total_amount,
   payment_method,
   subtotal,
-  baseUrl
+  baseUrl,
+  businessName
 });
 
 

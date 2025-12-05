@@ -61,6 +61,7 @@ export const createProduct = async (req, res) => {
 export const getProducts = async (req, res) => {
   try {
     const tenant_id = req.user?.tenant_id;
+    console.log(req.user);
     if (!tenant_id) return res.status(400).json({ error: "Missing tenant_id" });
 
     const page = Number(req.query.page) || 1;

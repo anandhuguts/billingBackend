@@ -22,7 +22,7 @@ export const loginUser = async (req, res) => {
     }
 
     const user = users[0];
-    console.log("User found:", user.email, "Tenant ID:", user.tenant_id);
+    console.log("User found:", user.email, "Tenant ID:", user.tenant_id,user);
 
     // 2️⃣ Compare passwords
     const validPassword = await bcrypt.compare(password, user.password);
@@ -35,6 +35,8 @@ export const loginUser = async (req, res) => {
       {
         id: user.id,
         email: user.email,
+          full_name: user.full_name,
+
         role: user.role,
         tenant_id: user.tenant_id,  // 🧩 add tenant ID inside the token
       },
