@@ -3,6 +3,9 @@ import fs from "fs";
 import path from "path";
 
 export const generatePDF = ({ invoiceNumber, items, total, payment_method, subtotal }) => {
+
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+
   return new Promise((resolve, reject) => {
     try {
       const invoicesDir = path.join(process.cwd(), "invoices");
@@ -111,7 +114,7 @@ export const generatePDF = ({ invoiceNumber, items, total, payment_method, subto
       doc.end();
 
       stream.on("finish", () => {
-        resolve(`http://localhost:5000/invoices/invoice-${invoiceNumber}.pdf`);
+     resolve(`${baseUrl}/invoices/invoice-${invoiceNumber}.pdf`);
       });
 
     } catch (err) {
