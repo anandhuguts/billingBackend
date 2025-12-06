@@ -7,23 +7,48 @@ export const EmployeesController = {
      GET ALL EMPLOYEES (With salary + position)
   ============================================================ */
   async getAll(req, res) {
-    try {
-      const tenant_id = req.user.tenant_id;
+  try {
+    const tenant_id = req.user.tenant_id;
+    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
 
-      const { data, error } = await supabase
-        .from("employees")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .order("created_at", { ascending: false });
+    const { data, error } = await supabase
+      .from("employees")
+      .select(`
+        id,
+        full_name,
+        phone,
+        position,
+        salary,
+        created_at,
 
-      if (error) throw error;
+        salary_payments:employee_salary_payments (
+          month,
+          net_salary
+        )
+      `)
+      .eq("tenant_id", tenant_id)
+      .eq("salary_payments.month", currentMonth)   // joined table filter
+      .order("created_at", { ascending: false });
 
-      return res.json({ success: true, data });
-    } catch (err) {
-      console.error("getAll employees error:", err);
-      return res.status(500).json({ error: err.message });
-    }
-  },
+    if (error) throw error;
+
+    // Convert joined result into simple boolean flag
+    const employees = data.map(emp => ({
+      ...emp,
+      is_salary_paid_this_month: emp.salary_payments.length > 0
+    }));
+
+    return res.json({
+      success: true,
+      current_month: currentMonth,
+      data: employees
+    });
+
+  } catch (err) {
+    console.error("getAll employees error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+},
 
   /* ============================================================
      GET ONE EMPLOYEE (includes salary + attendance)

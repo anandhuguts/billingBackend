@@ -25,18 +25,17 @@ async function addJournalEntry({ tenant_id, debit_account, credit_account, amoun
    HELPER: Insert Ledger Entry with running balance
 ============================================================ */
 async function insertLedgerEntry({ tenant_id, account_id, account_type, entry_type, amount, description, reference_id }) {
-  const last = await supabase
+  const { data: lastRows } = await supabase
     .from("ledger_entries")
     .select("balance")
     .eq("tenant_id", tenant_id)
     .eq("account_id", account_id)
+    .eq("account_type", account_type)
     .order("id", { ascending: false })
     .limit(1);
 
-  const prevBalance = last.data?.[0]?.balance || 0;
-
-  const newBalance =
-    entry_type === "debit" ? prevBalance + amount : prevBalance - amount;
+  const prevBalance = lastRows?.[0]?.balance || 0;
+  const newBalance = entry_type === "debit" ? prevBalance + amount : prevBalance - amount;
 
   const { error } = await supabase.from("ledger_entries").insert([
     {
@@ -61,20 +60,38 @@ async function insertLedgerEntry({ tenant_id, account_id, account_type, entry_ty
    MAIN CONTROLLER
 ============================================================ */
 export const SalaryController = {
+
   /* ------------------------------------------------------------
      PAY SALARY
   ------------------------------------------------------------ */
   async paySalary(req, res) {
     try {
       const tenant_id = req.user.tenant_id;
-      const { employee_id, month, salary_amount, deductions = 0, bonuses = 0, payment_method } = req.body;
+      const { employee_id, month, deductions = 0, bonuses = 0, payment_method } = req.body;
 
-      if (!employee_id || !month || !salary_amount || !payment_method) {
+      /* ------------------------------------------------------------
+          1️⃣ Validate required fields
+      ------------------------------------------------------------ */
+      if (!employee_id || !month || !payment_method) {
         return res.status(400).json({ error: "Missing required fields" });
       }
 
       /* ------------------------------------------------------------
-         1️⃣ Validate employee exists in employees table
+          2️⃣ Validate month format YYYY-MM
+      ------------------------------------------------------------ */
+      if (!/^\d{4}-\d{2}$/.test(month)) {
+        return res.status(400).json({ error: "Month must be in YYYY-MM format (Example: 2025-01)" });
+      }
+
+      /* Prevent paying salary for future months */
+      const salaryDate = new Date(`${month}-01`);
+      const now = new Date();
+      if (salaryDate > now) {
+        return res.status(400).json({ error: "Cannot pay salary for a future month" });
+      }
+
+      /* ------------------------------------------------------------
+         3️⃣ Validate employee exists
       ------------------------------------------------------------ */
       const { data: emp, error: empErr } = await supabase
         .from("employees")
@@ -84,11 +101,32 @@ export const SalaryController = {
         .single();
 
       if (empErr || !emp) {
-        return res.status(400).json({ error: "Employee not found in employees table" });
+        return res.status(400).json({ error: "Employee not found" });
       }
 
       /* ------------------------------------------------------------
-         2️⃣ Prevent duplicate salary month
+         4️⃣ Fetch salary from employee_salary_master
+      ------------------------------------------------------------ */
+      const { data: master, error: masterErr } = await supabase
+        .from("employee_salary_master")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("employee_id", employee_id)
+        .single();
+
+      if (masterErr || !master) {
+        return res.status(400).json({ error: "Salary structure not found for employee" });
+      }
+
+      const baseSalary = Number(master.monthly_salary);
+      const defaultAllowance = Number(master.allowance || 0);
+      const defaultDeduction = Number(master.deduction || 0);
+
+      const net_salary =
+        baseSalary + defaultAllowance + Number(bonuses || 0) - defaultDeduction - Number(deductions || 0);
+
+      /* ------------------------------------------------------------
+         5️⃣ Prevent duplicate salary for same month
       ------------------------------------------------------------ */
       const { data: existing } = await supabase
         .from("employee_salary_payments")
@@ -102,10 +140,8 @@ export const SalaryController = {
         return res.status(400).json({ error: `Salary already paid for ${month}` });
       }
 
-      const net_salary = Number(salary_amount) + Number(bonuses) - Number(deductions);
-
       /* ------------------------------------------------------------
-         3️⃣ Insert salary record
+         6️⃣ Insert salary payment record
       ------------------------------------------------------------ */
       const { data: salaryRows, error: salaryErr } = await supabase
         .from("employee_salary_payments")
@@ -114,7 +150,7 @@ export const SalaryController = {
             tenant_id,
             employee_id,
             month,
-            salary_amount,
+            salary_amount: baseSalary,
             deductions,
             bonuses,
             net_salary,
@@ -128,27 +164,25 @@ export const SalaryController = {
       const salaryRecord = salaryRows[0];
 
       /* ------------------------------------------------------------
-         4️⃣ Get required COA accounts
+         7️⃣ Get COA accounts
       ------------------------------------------------------------ */
-      const { data: coa, error: coaErr } = await supabase
+      const { data: coa } = await supabase
         .from("coa")
         .select("id, name, type")
         .eq("tenant_id", tenant_id);
 
-      if (coaErr || !coa.length) throw new Error("COA missing");
+      const salaryExpense = coa.find(a => a.name === "Salary Expense");
+      const cashAccount = coa.find(a => a.name === (payment_method === "bank" ? "Bank" : "Cash"));
 
-      const salaryExpense = coa.find((a) => a.name === "Salary Expense");
-      const cashAccount = coa.find((a) => a.name === (payment_method === "bank" ? "Bank" : "Cash"));
+      if (!salaryExpense) throw new Error("Salary Expense COA missing");
+      if (!cashAccount) throw new Error("Cash/Bank COA missing");
 
-      if (!salaryExpense) throw new Error("Salary Expense account missing");
-      if (!cashAccount) throw new Error("Cash/Bank account missing");
-
-      const description = `Salary payment for ${month}`;
+      const description = `Salary paid for ${month}`;
 
       /* ------------------------------------------------------------
-         5️⃣ Create Journal Entry
-         Debit  Salary Expense
-         Credit Cash/Bank
+         8️⃣ Journal Entry
+         DR Salary Expense
+         CR Cash/Bank
       ------------------------------------------------------------ */
       await addJournalEntry({
         tenant_id,
@@ -160,7 +194,7 @@ export const SalaryController = {
       });
 
       /* ------------------------------------------------------------
-         6️⃣ Ledger entries
+         9️⃣ Ledger Entries
       ------------------------------------------------------------ */
       await insertLedgerEntry({
         tenant_id,
@@ -183,7 +217,7 @@ export const SalaryController = {
       });
 
       /* ------------------------------------------------------------
-         7️⃣ Daybook entry
+         🔟 Daybook Entry
       ------------------------------------------------------------ */
       await supabase.from("daybook").insert([
         {
@@ -204,7 +238,9 @@ export const SalaryController = {
     }
   },
 
-  /* GET salary for one employee */
+  /* ------------------------------------------------------------
+     GET salary for one employee
+  ------------------------------------------------------------ */
   async getEmployeeSalary(req, res) {
     const { employee_id } = req.params;
     const tenant_id = req.user.tenant_id;
@@ -221,7 +257,9 @@ export const SalaryController = {
     return res.json({ success: true, data });
   },
 
-  /* GET all salary history */
+  /* ------------------------------------------------------------
+     GET all salary payments
+  ------------------------------------------------------------ */
   async getAll(req, res) {
     const tenant_id = req.user.tenant_id;
 
@@ -234,5 +272,42 @@ export const SalaryController = {
     if (error) return res.status(500).json({ error: error.message });
 
     return res.json({ success: true, data });
+  },
+  async checkSalaryPaid(req, res) {
+  const tenant_id = req.user.tenant_id;
+  const { employee_id } = req.params;
+  const { month } = req.query;
+
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+    return res.status(400).json({ error: "Month must be YYYY-MM format" });
   }
+
+  const { data, error } = await supabase
+    .from("employee_salary_payments")
+    .select("id, net_salary, created_at")
+    .eq("tenant_id", tenant_id)
+    .eq("employee_id", employee_id)
+    .eq("month", month)
+    .single();
+
+  if (error && error.code !== "PGRST116") {
+    // PGRST116 = row not found (that's okay)
+    return res.status(500).json({ error: error.message });
+  }
+
+  if (!data) {
+    return res.json({
+      paid: false,
+      message: `Salary NOT paid for ${month}`
+    });
+  }
+
+  return res.json({
+    paid: true,
+    message: `Salary already paid for ${month}`,
+    record: data
+  });
+}
+
 };
+

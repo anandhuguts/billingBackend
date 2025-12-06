@@ -2,28 +2,30 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 
-export const generatePDF = ({ invoiceNumber, items, total, payment_method, subtotal, baseUrl,businessName }) => {
+
+
+export const generatePDF = ({
+  invoiceNumber,
+  items,
+  total,
+  payment_method,
+  subtotal,
+  businessName
+}) => {
   return new Promise((resolve, reject) => {
     try {
-      const invoicesDir = path.join(process.cwd(), "invoices");
-      if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir);
-
-      const filePath = path.join(invoicesDir, `invoice-${invoiceNumber}.pdf`);
-
-      // Auto height receipts
       const doc = new PDFDocument({
-        size: [226, 800], // tall enough; PDFKit auto-shrinks if content is less
+        size: [226, 800],
         margin: 10,
       });
 
-      const stream = fs.createWriteStream(filePath);
-      doc.pipe(stream);
+      let chunks = [];
+      doc.on("data", (chunk) => chunks.push(chunk));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
 
       let y = 10;
 
-      // --------------------------
-      // HELPERS
-      // --------------------------
+      // Helpers
       const center = (text, size = 11, bold = false) => {
         doc.font(bold ? "Courier-Bold" : "Courier");
         doc.fontSize(size);
@@ -56,23 +58,17 @@ export const generatePDF = ({ invoiceNumber, items, total, payment_method, subto
         y += 14;
       };
 
-      // --------------------------
       // HEADER
-      // --------------------------
       stars();
-      center(businessName, 16, true);
+      center(businessName || "SUPERMART", 16, true);
       stars();
 
-      // Invoice Details
-      doc.font("Courier").fontSize(10);
       leftRight("Invoice No:", invoiceNumber);
       leftRight("Date:", new Date().toLocaleString());
 
       dashed();
 
-      // --------------------------
       // ITEMS
-      // --------------------------
       doc.font("Courier-Bold").fontSize(10);
       leftRight("ITEM", "AMOUNT");
 
@@ -86,9 +82,7 @@ export const generatePDF = ({ invoiceNumber, items, total, payment_method, subto
 
       dashed();
 
-      // --------------------------
       // TOTALS
-      // --------------------------
       doc.font("Courier-Bold").fontSize(11);
       leftRight("TOTAL", `AED ${Number(total).toFixed(2)}`, 12);
 
@@ -97,31 +91,22 @@ export const generatePDF = ({ invoiceNumber, items, total, payment_method, subto
 
       dashed();
 
-      // --------------------------
       // FOOTER
-      // --------------------------
       center("********* THANK YOU! *********", 11, true);
 
       y += 5;
 
-      // Barcode style lines
-  // Barcode mimic (centered)
-const barcodeWidth = 40 * 2.2;  // 40 bars × 2.2px spacing = 88px
-const startX = (226 - barcodeWidth) / 2; // perfectly centered
+      // Generate barcode lines
+      const barcodeWidth = 40 * 2.2;
+      const startX = (226 - barcodeWidth) / 2;
 
-for (let i = 0; i < 40; i++) {
-  const x = startX + i * 2.2;
-  const lineW = Math.random() > 0.5 ? 1.2 : 0.6;
-  doc.moveTo(x, y).lineTo(x, y + 25).lineWidth(lineW).stroke();
-}
-
+      for (let i = 0; i < 40; i++) {
+        const x = startX + i * 2.2;
+        const lineW = Math.random() > 0.5 ? 1.2 : 0.6;
+        doc.moveTo(x, y).lineTo(x, y + 25).lineWidth(lineW).stroke();
+      }
 
       doc.end();
-
-      stream.on("finish", () => {
-        resolve(`${baseUrl}/invoices/invoice-${invoiceNumber}.pdf`);
-      });
-
     } catch (err) {
       reject(err);
     }

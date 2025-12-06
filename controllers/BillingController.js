@@ -1165,7 +1165,9 @@ const pdfUrl = await generatePDF({
   baseUrl,
   businessName
 });
-
+res.setHeader("Content-Type", "application/pdf");
+res.setHeader("Content-Disposition", `attachment; filename=invoice-${invoice_number}.pdf`);
+return res.send(pdfUrl);
 
     // Final response
   return res.status(201).json({
