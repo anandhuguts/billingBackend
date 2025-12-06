@@ -526,10 +526,9 @@ const mergedItems = items.map((i) => {
 const { discount: employee_discount_total } = await calculateEmployeeDiscount({
   tenant_id,
   buyer_employee_id: req.body.employee_id || null,
-  logged_in_user: req.user,
-  subtotal,
-  invoice_id: null
+  subtotal
 });
+
 
 
     let total_amount =

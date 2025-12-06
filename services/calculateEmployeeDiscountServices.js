@@ -3,20 +3,25 @@ import { supabase } from "../supabase/supabaseClient.js";
 export async function calculateEmployeeDiscount({
   tenant_id,
   buyer_employee_id,
-  logged_in_user,
   subtotal,
-  invoice_id
 }) {
-  // 1) Must provide employee_id in body
+  // 1) Must provide employee_id
   if (!buyer_employee_id) return { discount: 0 };
 
-  // 2) Only the same employee can bill themselves
-  if (buyer_employee_id !== logged_in_user.id) return { discount: 0 };
+  // 2) Check if employee exists in employees table
+  const { data: employee, error: empErr } = await supabase
+    .from("employees")
+    .select("id")
+    .eq("tenant_id", tenant_id)
+    .eq("id", buyer_employee_id)
+    .maybeSingle();
 
-  // 3) Must be staff role
-  if (logged_in_user.role !== "staff") return { discount: 0 };
+  // If no employee found → no discount
+  if (empErr || !employee) {
+  throw new Error("Invalid employee ID");
+}
 
-  // 4) Get employee discount rule
+  // 3) Fetch active employee discount rule
   const { data: rules } = await supabase
     .from("employee_discount_rules")
     .select("*")
@@ -27,15 +32,15 @@ export async function calculateEmployeeDiscount({
   if (!rules?.length) return { discount: 0 };
   const rule = rules[0];
 
-  // Base discount
+  // 4) Base discount amount
   let discount = (subtotal * Number(rule.discount_percent || 0)) / 100;
 
-  // Per bill max
+  // 5) Per-bill max cap
   if (rule.max_discount_amount && discount > rule.max_discount_amount) {
     discount = rule.max_discount_amount;
   }
 
-  // Monthly limit check
+  // 6) Monthly limit logic
   if (rule.monthly_limit) {
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
@@ -49,20 +54,22 @@ export async function calculateEmployeeDiscount({
       .gte("used_at", start)
       .lt("used_at", next);
 
-    const usedAmt = used?.reduce((t, r) => t + Number(r.discount_amount), 0) || 0;
+    const usedAmt =
+      used?.reduce((t, r) => t + Number(r.discount_amount || 0), 0) || 0;
+
     const remaining = rule.monthly_limit - usedAmt;
 
     if (remaining <= 0) discount = 0;
     else if (discount > remaining) discount = remaining;
   }
 
-  // Insert TEMP record (invoice_id assigned later)
- if (discount > 0 && buyer_employee_id === logged_in_user.id) {
+  // 7) TEMP record (invoice_id attached later)
+  if (discount > 0) {
     await supabase.from("employee_discount_usage").insert([
       {
         tenant_id,
         employee_id: buyer_employee_id,
-        invoice_id,
+        invoice_id: null,
         discount_amount: discount,
       },
     ]);
