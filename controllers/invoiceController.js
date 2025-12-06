@@ -1,6 +1,7 @@
 // controllers/invoiceController.js
 import { supabase } from "../supabase/supabaseClient.js";
 import { applyDiscounts } from "../services/applyDiscountsService.js";
+import { calculateEmployeeDiscount } from "../services/calculateEmployeeDiscountServices.js";
 
 // GET /api/invoices - Get all invoices with items
 // GET /api/invoices?page=1&limit=10
@@ -132,7 +133,8 @@ export const deleteInvoice = async (req, res) => {
 export const previewInvoice = async (req, res) => {
   try {
     const tenant_id = req.user.tenant_id;
-    const { items = [], customer_id = null, coupon_code = null } = req.body;
+  const { items = [], customer_id = null, coupon_code = null, employee_id = null } = req.body;
+
 
     if (!items || items.length === 0)
       return res.status(400).json({ error: "No items provided" });
@@ -211,10 +213,16 @@ export const previewInvoice = async (req, res) => {
     );
 
     // 6️⃣ EMPLOYEE DISCOUNT PREVIEW (always safe)
+    
+    const { discount: employee_discount_total } = await calculateEmployeeDiscount({
+      tenant_id,
+      buyer_employee_id: employee_id || null,
+      subtotal: total_before_redeem
+    });
+    
     const employee_discount_preview = {
-      eligible: false,
-      discount_this_bill: 0,
-      remaining_this_month: 0,
+      eligible: employee_discount_total > 0,
+      discount_this_bill: employee_discount_total
     };
 
     return res.json({
