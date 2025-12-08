@@ -63,29 +63,42 @@ export async function applyDiscounts({
 
   // -----------------------------------------
   // 1) ITEM-LEVEL DISCOUNTS (on inclusive line total)
+
+   const subtotal = workingItems.reduce((s, it) => s + it.lineGross, 0);
   // -----------------------------------------
-  for (const rule of itemRules) {
-    for (const it of workingItems) {
+for (const rule of itemRules) {
+  for (const it of workingItems) {
+
+    // Apply only to matching product
+    if (
+      rule.product_id &&
+      Number(rule.product_id) === Number(it.product_id)
+    ) {
+      // NEW: Check min bill amount BEFORE applying discount
       if (
-        rule.product_id &&
-        Number(rule.product_id) === Number(it.product_id)
+        rule.min_bill_amount &&
+        subtotal < Number(rule.min_bill_amount)
       ) {
-        let extraLineDiscount = 0;
-
-        if (Number(rule.discount_percent || 0) > 0) {
-          extraLineDiscount =
-            (it.lineGross * Number(rule.discount_percent)) / 100;
-        } else if (Number(rule.discount_amount || 0) > 0) {
-          extraLineDiscount = Number(rule.discount_amount) * it.qty;
-        }
-
-        const remaining = it.lineGross - it.lineDiscount;
-        extraLineDiscount = Math.max(0, Math.min(extraLineDiscount, remaining));
-
-        it.lineDiscount += extraLineDiscount;
+        continue; // Do not apply discount
       }
+
+      let extraLineDiscount = 0;
+
+      if (Number(rule.discount_percent || 0) > 0) {
+        extraLineDiscount =
+          (it.lineGross * Number(rule.discount_percent)) / 100;
+      } else if (Number(rule.discount_amount || 0) > 0) {
+        extraLineDiscount = Number(rule.discount_amount) * it.qty;
+      }
+
+      const remaining = it.lineGross - it.lineDiscount;
+      extraLineDiscount = Math.max(0, Math.min(extraLineDiscount, remaining));
+
+      it.lineDiscount += extraLineDiscount;
     }
   }
+}
+
 
   // recompute per-unit and net values AFTER item discounts
   for (const it of workingItems) {
@@ -111,7 +124,7 @@ export async function applyDiscounts({
     }
   }
 
-  const subtotal = workingItems.reduce((s, it) => s + it.lineGross, 0);
+ 
   const item_discount_total = workingItems.reduce(
     (s, it) => s + it.lineDiscount,
     0
