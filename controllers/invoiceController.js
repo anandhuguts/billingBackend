@@ -39,27 +39,27 @@ export const getAllInvoices = async (req, res) => {
     // ============================================
     // 🔍 SEARCH SUPPORT
     // ============================================
-    if (search) {
-      query = supabase
-        .from("invoices")
-        .select(`
-          *,
-          invoice_items (
-            *,
-            products(name, brand, category, unit)
-          ),
-          customers(name)
-        `, { count: "exact" })
-        .eq("tenant_id", tenant_id)
-        .or(`
-          invoice_number.ilike.%${search}%,
-          payment_method.ilike.%${search}%,
-          customers.name.ilike.%${search}%,
-          created_at.ilike.%${search}%
-        `)
-        .order("created_at", { ascending: false })
-        .range(start, end);
-    }
+   if (search) {
+  query = supabase
+    .from("invoices")
+    .select(
+      `
+      *,
+      invoice_items (
+        *,
+        products(name, brand, category, unit)
+      ),
+      customers(name)
+      `,
+      { count: "exact" }
+    )
+    .eq("tenant_id", tenant_id)
+    .or(
+      `invoice_number.ilike.*${search}*,payment_method.ilike.*${search}*,customers.name.ilike.*${search}*,created_at.ilike.*${search}*`
+    )
+    .order("created_at", { ascending: false })
+    .range(start, end);
+}
 
     const { data: invoices, error, count } = await query;
     if (error) throw error;

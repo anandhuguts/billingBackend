@@ -88,43 +88,40 @@ export const getInventory = async (req, res) => {
     // ==========================================
     // Supabase cannot search nested columns directly in join,
     // so we filter using RPC-style OR logic by referencing the foreign table.
-    if (search) {
-      query = supabase
-        .from("inventory")
-        .select(
-          `
-          id,
-          quantity,
-          reorder_level,
-          updated_at,
-          product_id,
-          expiry_date,
-          max_stock,
-          products (
-            name,
-            category,
-            brand,
-            unit,
-            cost_price,
-            selling_price,
-            tax,
-            barcode,
-            sku
-          )
-        `,
-          { count: "exact" }
-        )
-        .eq("tenant_id", tenant_id)
-        .or(`
-          products.name.ilike.%${search}%,
-          products.sku.ilike.%${search}%,
-          products.barcode.ilike.%${search}%,
-          products.brand.ilike.%${search}%,
-          products.category.ilike.%${search}%
-        `)
-        .order("updated_at", { ascending: false })
-        .range(start, end);
-    }
+if (search) {
+  query = supabase
+    .from("inventory")
+    .select(
+      `
+      id,
+      quantity,
+      reorder_level,
+      updated_at,
+      product_id,
+      expiry_date,
+      max_stock,
+      products (
+        name,
+        category,
+        brand,
+        unit,
+        cost_price,
+        selling_price,
+        tax,
+        barcode,
+        sku
+      )
+    `,
+      { count: "exact" }
+    )
+    .eq("tenant_id", tenant_id)
+    .or(
+      `products.name.ilike.*${search}*,products.sku.ilike.*${search}*,products.barcode.ilike.*${search}*,products.brand.ilike.*${search}*,products.category.ilike.*${search}*`
+    )
+    .order("updated_at", { ascending: false })
+    .range(start, end);
+}
+
 
     const { data, count, error } = await query;
     if (error) throw error;

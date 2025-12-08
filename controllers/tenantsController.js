@@ -51,16 +51,17 @@ export const getAllTenants = async (req, res) => {
     // ==========================================
     // 🔍 APPLY SEARCH
     // ==========================================
-    if (search) {
-      query = supabase
-        .from("tenants")
-        .select("*", { count: "exact" })
-        .or(
-          `name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,id.eq.${search}`
-        )
-        .order("created_at", { ascending: false })
-        .range(start, end);
-    }
+if (search) {
+  query = supabase
+    .from("tenants")
+    .select("*", { count: "exact" })
+    .or(
+      `name.ilike.*${search}*,email.ilike.*${search}*,phone.ilike.*${search}*,id.eq.${search}`
+    )
+    .order("created_at", { ascending: false })
+    .range(start, end);
+}
+
 
     const { data, error, count } = await query;
 
