@@ -82,18 +82,17 @@ export const getProducts = async (req, res) => {
     // 🔍 SEARCH SUPPORT
     // ===============================
     if (search) {
-      query = supabase
-        .from("products")
-        .select("*", { count: "exact" })
-        .eq("tenant_id", tenant_id)
-        .or(`
-          name.ilike.%${search}%,
-          sku.ilike.%${search}%,
-          barcode.ilike.%${search}%
-        `)
-        .order("created_at", { ascending: false })
-        .range(start, end);
-    }
+  query = supabase
+    .from("products")
+    .select("*", { count: "exact" })
+    .eq("tenant_id", tenant_id)
+    .or(
+      `name.ilike.*${search}*,sku.ilike.*${search}*,barcode.ilike.*${search}*`
+    )
+    .order("created_at", { ascending: false })
+    .range(start, end);
+}
+
 
     const { data, count, error } = await query;
     if (error) throw error;
