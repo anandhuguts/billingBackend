@@ -40,6 +40,7 @@ import attendanceRoutes from "./routes/attendanceRoutes.js";
 import salaryRoutes from "./routes/salaryRoutes.js";  
 import EmplopyeeDiscountRoutes from "./routes/EmplyeeDiscountRoutes.js";
 import employeesRoutes from "./routes/employeesRoutes.js";
+import cateogeryRouter from "./routes/cateogeryRouter.js";
 
 const app = express();
 
@@ -182,6 +183,7 @@ app.use("/api/employees/attendance",verifyToken, attendanceRoutes);
 app.use("/api/employees/salary",verifyToken, salaryRoutes);
 app.use("/api/employees/discount",verifyToken, EmplopyeeDiscountRoutes);
 app.use("/api/employees", verifyToken,employeesRoutes);
+app.use("/api/categories", verifyToken, cateogeryRouter);
 
 // Notifications
 
