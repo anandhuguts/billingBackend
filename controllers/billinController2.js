@@ -683,45 +683,42 @@ export const createInvoice = async (req, res) => {
     // -----------------------------
     // STEP 16: PREPARE RESPONSE (fast) & QUEUE DEFERRED OPS
     // -----------------------------
-    const response = {
-      message: "Invoice created successfully",
-      invoice: {
-        ...invoice,
-        subtotal,
-        final_amount: total_amount,
-        pdf_url: `${baseUrl}/invoices/invoice-${invoice_number}.pdf`,
-      },
-      items: itemsWithNames,
-      lowStockAlerts,
-      loyalty: isLoyaltyCustomer
-        ? {
-            earned: earn_points,
-            redeemed: redeem_points,
-            final_balance: currentPoints,
-          }
-        : null,
-    };
+    // const response = {
+    //   message: "Invoice created successfully",
+    //   invoice: {
+    //     ...invoice,
+    //     subtotal,
+    //     final_amount: total_amount,
+    //     pdf_url: `${baseUrl}/invoices/invoice-${invoice_number}.pdf`,
+    //   },
+    //   items: itemsWithNames,
+    //   lowStockAlerts,
+    //   loyalty: isLoyaltyCustomer
+    //     ? {
+    //         earned: earn_points,
+    //         redeemed: redeem_points,
+    //         final_balance: currentPoints,
+    //       }
+    //     : null,
+    // };
 
     // --- Generate PDF before sending response ---
-// const pdfBuffer = await generatePDF({
-//   invoiceNumber: invoice_number,
-//   items: itemsWithNames,
-//   total: total_amount,
-//   payment_method,
-//   subtotal,
-//   baseUrl,
-//   businessName,
-// });
+// -----------------------------
+// STEP 16: Generate PDF before sending response
+// -----------------------------
+const pdfBuffer = await generatePDF({
+  invoiceNumber: invoice_number,
+  items: itemsWithNames,
+  total: total_amount,
+  payment_method,
+  subtotal,
+  baseUrl,
+  businessName,
+});
 
-// // --- Send PDF to frontend immediately ---
-// res.setHeader("Content-Type", "application/pdf");
-// res.setHeader(
-//   "Content-Disposition",
-//   `attachment; filename=invoice-${invoice_number}.pdf`
-// );
-
-// // Send PDF and finish request
-// res.send(pdfBuffer);
+// -----------------------------
+// STEP 17: Start deferred operations
+// -----------------------------
 setImmediate(() => {
   processDeferredOperations({
     tenant_id,
@@ -746,27 +743,21 @@ setImmediate(() => {
   });
 });
 
-console.log(`✅ Invoice ${invoice_number} created — deferred ops queued.`);
-return res.status(201).json({
-  message: "Invoice created successfully",
-  invoice: {
-    ...invoice,
-    subtotal,
-    final_amount: total_amount,
-    pdf_url: `${baseUrl}/invoices/invoice-${invoice_number}.pdf`
-  },
-  items: itemsWithNames,
-  lowStockAlerts,
-  loyalty: isLoyaltyCustomer
-    ? {
-        earned: earn_points,
-        redeemed: redeem_points,
-        final_balance: currentPoints
-      }
-    : null
-});
+console.log(`✅ Invoice ${invoice_number} created — PDF sent, deferred ops queued.`);
 
-    return;
+// -----------------------------
+// STEP 18: SEND PDF AND END RESPONSE
+// -----------------------------
+res.setHeader("Content-Type", "application/pdf");
+res.setHeader(
+  "Content-Disposition",
+  `attachment; filename=invoice-${invoice_number}.pdf`
+);
+
+return res.send(pdfBuffer);
+
+
+    
   } catch (err) {
     console.error("❌ createInvoice error:", err);
     // If headers already sent, just log
