@@ -1,69 +1,70 @@
 import { supabase } from "../supabase/supabaseClient.js";
+import { addJournalEntry } from "../services/addJournalEntryService.js";
 
 /* =========================================================
    ACCOUNTING HELPERS (same pattern as purchases / returns)
 ========================================================= */
 
-async function addJournalEntry({
-  tenant_id,
-  debit_account,
-  credit_account,
-  amount,
-  description,
-  reference_id = null,
-  reference_type = "sales_return",
-}) {
-  const { error } = await supabase.from("journal_entries").insert([
-    {
-      tenant_id,
-      debit_account,
-      credit_account,
-      amount,
-      description,
-      reference_id,
-      reference_type,
-    },
-  ]);
-  if (error) throw error;
-}
+// async function addJournalEntry({
+//   tenant_id,
+//   debit_account,
+//   credit_account,
+//   amount,
+//   description,
+//   reference_id = null,
+//   reference_type = "sales_return",
+// }) {
+//   const { error } = await supabase.from("journal_entries").insert([
+//     {
+//       tenant_id,
+//       debit_account,
+//       credit_account,
+//       amount,
+//       description,
+//       reference_id,
+//       reference_type,
+//     },
+//   ]);
+//   if (error) throw error;
+// }
 
-async function insertLedgerEntry({
-  tenant_id,
-  account_type,
-  account_id = null, // should be COA id; we keep null to avoid FK clash
-  entry_type,
-  description,
-  debit = 0,
-  credit = 0,
-  reference_id = null,
-}) {
-  const { data: lastRows } = await supabase
-    .from("ledger_entries")
-    .select("balance")
-    .eq("tenant_id", tenant_id)
-    .eq("account_type", account_type)
-    .order("created_at", { ascending: false })
-    .limit(1);
+// async function insertLedgerEntry({
+//   tenant_id,
+//   account_type,
+//   account_id = null, // should be COA id; we keep null to avoid FK clash
+//   entry_type,
+//   description,
+//   debit = 0,
+//   credit = 0,
+//   reference_id = null,
+// }) {
+//   const { data: lastRows } = await supabase
+//     .from("ledger_entries")
+//     .select("balance")
+//     .eq("tenant_id", tenant_id)
+//     .eq("account_type", account_type)
+//     .order("created_at", { ascending: false })
+//     .limit(1);
 
-  const prev = lastRows?.[0]?.balance || 0;
-  const updatedBalance = Number(prev) + Number(debit) - Number(credit);
+//   const prev = lastRows?.[0]?.balance || 0;
+//   const updatedBalance = Number(prev) + Number(debit) - Number(credit);
 
-  const { error } = await supabase.from("ledger_entries").insert([
-    {
-      tenant_id,
-      account_type,
-      account_id,
-      entry_type,
-      description,
-      debit,
-      credit,
-      balance: updatedBalance,
-      reference_id,
-    },
-  ]);
+//   const { error } = await supabase.from("ledger_entries").insert([
+//     {
+//       tenant_id,
+//       account_type,
+//       account_id,
+//       entry_type,
+//       description,
+//       debit,
+//       credit,
+//       balance: updatedBalance,
+//       reference_id,
+//     },
+//   ]);
 
-  if (error) throw error;
-}
+//   if (error) throw error;
+// }
 
 async function getCoaMap(tenant_id) {
   const { data, error } = await supabase
@@ -458,142 +459,74 @@ export const createSalesReturn = async (req, res) => {
     ]);
 
     // 9a) Reverse revenue and VAT (same for cash or credit_note)
-    if (refund_type === "cash") {
-      // Cash refund
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "cash",
-        account_id: null,
-        entry_type: "credit",
-        description: desc,
-        debit: 0,
-        credit: refundAmount,
-        reference_id: sales_return_id,
-      });
-    } else {
-      // Credit note → customer owes less
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "accounts_receivable",
-        account_id: null,
-        entry_type: "debit",
-        description: desc,
-        debit: refundAmount,
-        credit: 0,
-        reference_id: sales_return_id,
-      });
-    }
-
-    // Reverse Sales
-    await insertLedgerEntry({
-      tenant_id,
-      account_type: "sales",
-      account_id: null,
-      entry_type: "debit",
-      description: desc,
-      debit: totalNetRounded,
-      credit: 0,
-      reference_id: sales_return_id,
-    });
-
-    // Reverse VAT Output
-    if (totalVatRounded > 0) {
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "vat_output",
-        account_id: null,
-        entry_type: "debit",
-        description: `${desc} VAT reversal`,
-        debit: totalVatRounded,
-        credit: 0,
-        reference_id: sales_return_id,
-      });
-    }
-
-    // 9b) Reverse COGS & Inventory (goods came back)
-    if (totalCostRounded > 0) {
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "inventory",
-        account_id: null,
-        entry_type: "debit",
-        description: `${desc} - Inventory increase`,
-        debit: totalCostRounded,
-        credit: 0,
-        reference_id: sales_return_id,
-      });
-
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "cogs",
-        account_id: null,
-        entry_type: "credit",
-        description: `${desc} - COGS reversal`,
-        debit: 0,
-        credit: totalCostRounded,
-        reference_id: sales_return_id,
-      });
-    }
-
+    
     // Journal entries
-    if (refund_type === "cash") {
-      await addJournalEntry({
-        tenant_id,
-        debit_account: coaId(coaMap, "sales"),
-        credit_account: coaId(coaMap, "cash"),
-        amount: totalNetRounded,
-        description: `${desc} - Sales reversal`,
-        reference_id: sales_return_id,
-        reference_type: "sales_return",
-      });
+  // 9) ACCOUNTING (NEW SYSTEM USING addJournalEntry ONLY)
 
-      if (totalVatRounded > 0) {
-        await addJournalEntry({
-          tenant_id,
-          debit_account: coaId(coaMap, "vat output"),
-          credit_account: coaId(coaMap, "cash"),
-          amount: totalVatRounded,
-          description: `${desc} - VAT reversal`,
-          reference_id: sales_return_id,
-          reference_type: "sales_return",
-        });
-      }
-    } else {
-      await addJournalEntry({
-        tenant_id,
-        debit_account: coaId(coaMap, "accounts receivable"),
-        credit_account: coaId(coaMap, "sales"),
-        amount: totalNetRounded,
-        description: `${desc} - Sales reversal`,
-        reference_id: sales_return_id,
-        reference_type: "sales_return",
-      });
 
-      if (totalVatRounded > 0) {
-        await addJournalEntry({
-          tenant_id,
-          debit_account: coaId(coaMap, "accounts receivable"),
-          credit_account: coaId(coaMap, "vat output"),
-          amount: totalVatRounded,
-          description: `${desc} - VAT reversal`,
-          reference_id: sales_return_id,
-          reference_type: "sales_return",
-        });
-      }
-    }
+// 9A — Refund (cash or credit note)
+if (refund_type === "cash") {
+  await addJournalEntry({
+    tenant_id,
+    debit_account: coaId(coaMap, "sales returns"),   // or "sales"
+    credit_account: coaId(coaMap, "cash"),
+    amount: refundAmount,
+    description: `${desc} - Refund to customer`,
+    reference_id: sales_return_id,
+    reference_type: "sales_return",
+  });
+} else {
+  await addJournalEntry({
+    tenant_id,
+    debit_account: coaId(coaMap, "sales returns"),   // or "sales"
+    credit_account: coaId(coaMap, "accounts receivable"),
+    amount: refundAmount,
+    description: `${desc} - Credit note issued`,
+    reference_id: sales_return_id,
+    reference_type: "sales_return",
+  });
+}
 
-    // COGS reversal journal
-    if (totalCostRounded > 0) {
-      await addJournalEntry({
-        tenant_id,
-        debit_account: coaId(coaMap, "inventory"),
-        credit_account: coaId(coaMap, "cogs"),
-        amount: totalCostRounded,
-        description: `${desc} - COGS reversal`,
-        reference_id: sales_return_id,
-        reference_type: "sales_return",
-      });
-    }
+// 9B — Reverse Sales Revenue
+await addJournalEntry({
+  tenant_id,
+  debit_account: coaId(coaMap, "sales"),
+  credit_account: refund_type === "cash"
+    ? coaId(coaMap, "cash")
+    : coaId(coaMap, "accounts receivable"),
+  amount: totalNetRounded,
+  description: `${desc} - Reverse sales revenue`,
+  reference_id: sales_return_id,
+  reference_type: "sales_return",
+});
+
+// 9C — Reverse VAT Output
+if (totalVatRounded > 0) {
+  await addJournalEntry({
+    tenant_id,
+    debit_account: coaId(coaMap, "vat output"),
+    credit_account: refund_type === "cash"
+      ? coaId(coaMap, "cash")
+      : coaId(coaMap, "accounts receivable"),
+    amount: totalVatRounded,
+    description: `${desc} - Reverse VAT Output`,
+    reference_id: sales_return_id,
+    reference_type: "sales_return",
+  });
+}
+
+// 9D — Reverse COGS & Increase Inventory
+if (totalCostRounded > 0) {
+  await addJournalEntry({
+    tenant_id,
+    debit_account: coaId(coaMap, "inventory"),
+    credit_account: coaId(coaMap, "cogs"),
+    amount: totalCostRounded,
+    description: `${desc} - Reverse COGS & increase inventory`,
+    reference_id: sales_return_id,
+    reference_type: "sales_return",
+  });
+}
 
     // 10) VAT report update
     const now = new Date();

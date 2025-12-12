@@ -1,70 +1,10 @@
 import { supabase } from "../supabase/supabaseClient.js";
+import { addJournalEntry } from "../services/addJournalEntryService.js";
 
 /* =========================================================
    ACCOUNTING HELPERS (same style as other modules)
 ========================================================= */
 
-async function addJournalEntry({
-  tenant_id,
-  debit_account,
-  credit_account,
-  amount,
-  description,
-  reference_id = null,
-  reference_type = "purchase_return",
-}) {
-  const { error } = await supabase.from("journal_entries").insert([
-    {
-      tenant_id,
-      debit_account,
-      credit_account,
-      amount,
-      description,
-      reference_id,
-      reference_type,
-    },
-  ]);
-
-  if (error) throw error;
-}
-
-async function insertLedgerEntry({
-  tenant_id,
-  account_type,
-  account_id = null, // MUST be COA id; we keep null to avoid FK clash
-  entry_type,
-  description,
-  debit = 0,
-  credit = 0,
-  reference_id = null,
-}) {
-  const { data: lastRows } = await supabase
-    .from("ledger_entries")
-    .select("balance")
-    .eq("tenant_id", tenant_id)
-    .eq("account_type", account_type)
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  const prev = lastRows?.[0]?.balance || 0;
-  const balance = Number(prev) + Number(debit) - Number(credit);
-
-  const { error } = await supabase.from("ledger_entries").insert([
-    {
-      tenant_id,
-      account_type,
-      account_id, // keep null or COA id only
-      entry_type,
-      description,
-      debit,
-      credit,
-      balance,
-      reference_id,
-    },
-  ]);
-
-  if (error) throw error;
-}
 
 async function getCoaMap(tenant_id) {
   const { data, error } = await supabase
@@ -192,6 +132,7 @@ export const createPurchaseReturn = async (req, res) => {
       reason = "",
       total_refund,
     } = req.body;
+    console.log("🔥 createPurchaseReturn CALLED", req.body);
 
     if (!purchase_id || !product_id || !quantity) {
       return res.status(400).json({
@@ -392,152 +333,86 @@ if (qty > remainingQty) {
        5) ACCOUNTING
     =========================== */
 
-    const coaMap = await getCoaMap(tenant_id);
-    const desc = `Purchase Return #${purchase_return_id} (Purchase #${
-      purchase.invoice_number || purchase_id
-    })`;
+   /* ===========================
+   5) ACCOUNTING (Journal Only)
+=========================== */
 
-    // ---- 5.1 Daybook ----
-    // Purchase Return = money IN / liability reduced → DEBIT
-    await supabase.from("daybook").insert([
-      {
-        tenant_id,
-        entry_type: "purchase_return",
-        description: desc,
-        debit: refundAmount,
-        credit: 0,
-        reference_id: purchase_return_id,
-      },
-    ]);
+const coaMap = await getCoaMap(tenant_id);
 
-    // ---- 5.2 Ledger + Journal ----
-    if (refund_method === "cash") {
-      // ---- CASH REFUND: Supplier gives us cash ----
+const desc = `Purchase Return #${purchase_return_id} (Purchase #${
+  purchase.invoice_number || purchase_id
+})`;
 
-      // Ledger: Cash DEBIT
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "cash",
-        account_id: null,
-        entry_type: "debit",
-        description: desc,
-        debit: refundAmount,
-        credit: 0,
-        reference_id: purchase_return_id,
-      });
+// ---- Daybook ----
+// Money IN (refund) → DEBIT
+await supabase.from("daybook").insert([
+  {
+    tenant_id,
+    entry_type: "purchase_return",
+    description: desc,
+    debit: refundAmount,
+    credit: 0,
+    reference_id: purchase_return_id,
+  },
+]);
 
-      // Ledger: Inventory CREDIT (reduce stock asset)
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "inventory",
-        account_id: null,
-        entry_type: "credit",
-        description: desc,
-        debit: 0,
-        credit: netAmount,
-        reference_id: purchase_return_id,
-      });
+// ------------------------------
+// 5A — REFUND METHOD
+// ------------------------------
 
-      // Ledger: VAT Input CREDIT (reduce input VAT)
-      if (taxAmount > 0) {
-        await insertLedgerEntry({
-          tenant_id,
-          account_type: "vat_input",
-          account_id: null,
-          entry_type: "credit",
-          description: `${desc} VAT reversal`,
-          debit: 0,
-          credit: taxAmount,
-          reference_id: purchase_return_id,
-        });
-      }
+// CASH refund → Supplier gives us money back
+if (refund_method === "cash") {
+  await addJournalEntry({
+    tenant_id,
+    debit_account: coaId(coaMap, "cash"),
+    credit_account: coaId(coaMap, "inventory"),
+    amount: netAmount,
+    description: `${desc} - Inventory reversal`,
+    reference_id: purchase_return_id,
+    reference_type: "purchase_return",
+  });
 
-      // Journal: Dr Cash, Cr Inventory (net)
-      await addJournalEntry({
-        tenant_id,
-        debit_account: coaId(coaMap, "cash"),
-        credit_account: coaId(coaMap, "inventory"),
-        amount: netAmount,
-        description: `${desc} - Inventory reversal`,
-        reference_id: purchase_return_id,
-      });
+  if (taxAmount > 0) {
+    await addJournalEntry({
+      tenant_id,
+      debit_account: coaId(coaMap, "cash"),
+      credit_account: coaId(coaMap, "vat input"),
+      amount: taxAmount,
+      description: `${desc} - VAT reversal`,
+      reference_id: purchase_return_id,
+      reference_type: "purchase_return",
+    });
+  }
+}
 
-      // Journal: Dr Cash, Cr VAT Input (tax)
-      if (taxAmount > 0) {
-        await addJournalEntry({
-          tenant_id,
-          debit_account: coaId(coaMap, "cash"),
-          credit_account: coaId(coaMap, "vat input"),
-          amount: taxAmount,
-          description: `${desc} - VAT reversal`,
-          reference_id: purchase_return_id,
-        });
-      }
-    } else {
-      // ---- CREDIT NOTE ----
-      // Supplier reduces our payable (liability decreases)
+// CREDIT NOTE → Payables reduced
+else {
+  await addJournalEntry({
+    tenant_id,
+    debit_account: coaId(coaMap, "accounts payable"),
+    credit_account: coaId(coaMap, "inventory"),
+    amount: netAmount,
+    description: `${desc} - Inventory reversal`,
+    reference_id: purchase_return_id,
+    reference_type: "purchase_return",
+  });
 
-      // Ledger: Accounts Payable DEBIT (reduce liability)
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "accounts_payable",
-        account_id: null, // DO NOT put supplier_id here (FK to COA)
-        entry_type: "debit",
-        description: desc,
-        debit: refundAmount,
-        credit: 0,
-        reference_id: purchase_return_id,
-      });
+  if (taxAmount > 0) {
+    await addJournalEntry({
+      tenant_id,
+      debit_account: coaId(coaMap, "accounts payable"),
+      credit_account: coaId(coaMap, "vat input"),
+      amount: taxAmount,
+      description: `${desc} - VAT reversal`,
+      reference_id: purchase_return_id,
+      reference_type: "purchase_return",
+    });
+  }
+}
 
-      // Ledger: Inventory CREDIT
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "inventory",
-        account_id: null,
-        entry_type: "credit",
-        description: desc,
-        debit: 0,
-        credit: netAmount,
-        reference_id: purchase_return_id,
-      });
 
-      // Ledger: VAT Input CREDIT
-      if (taxAmount > 0) {
-        await insertLedgerEntry({
-          tenant_id,
-          account_type: "vat_input",
-          account_id: null,
-          entry_type: "credit",
-          description: `${desc} VAT reversal`,
-          debit: 0,
-          credit: taxAmount,
-          reference_id: purchase_return_id,
-        });
-      }
 
-      // Journal: Dr Accounts Payable, Cr Inventory (net)
-      await addJournalEntry({
-        tenant_id,
-        debit_account: coaId(coaMap, "accounts payable"),
-        credit_account: coaId(coaMap, "inventory"),
-        amount: netAmount,
-        description: `${desc} - Inventory reversal`,
-        reference_id: purchase_return_id,
-      });
-
-      // Journal: Dr Accounts Payable, Cr VAT Input (tax)
-      if (taxAmount > 0) {
-        await addJournalEntry({
-          tenant_id,
-          debit_account: coaId(coaMap, "accounts payable"),
-          credit_account: coaId(coaMap, "vat input"),
-          amount: taxAmount,
-          description: `${desc} - VAT reversal`,
-          reference_id: purchase_return_id,
-        });
-      }
-    }
-
+  
     /* ===========================
        6) VAT REVERSAL
     =========================== */

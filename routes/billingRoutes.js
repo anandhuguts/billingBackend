@@ -1,5 +1,5 @@
 import express from "express";
-import { createInvoice} from "../controllers/BillingController.js";
+import { createInvoice} from "../controllers/billinController2.js";
 import { verifyToken } from "../middleware/verifyToken.js";
 import { generatePDF } from "../scripts/pdfGenerator.js";
 

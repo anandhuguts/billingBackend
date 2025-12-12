@@ -1,5 +1,6 @@
 import { supabase } from "../supabase/supabaseClient.js";
 import { getNextPurchaseSequence } from "../utils/getNextPurchaseSequence.js";
+import { addJournalEntry } from "../services/addJournalEntryService.js";
 // ===========================
 // ACCOUNTING HELPERS
 // ===========================
@@ -8,76 +9,76 @@ import { getNextPurchaseSequence } from "../utils/getNextPurchaseSequence.js";
  * JOURNAL entry (double-entry)
  * debit_account, credit_account are COA IDs
  */
-export async function addJournalEntry({
-  tenant_id,
-  debit_account,
-  credit_account,
-  amount,
-  description,
-  reference_id = null,
-  reference_type = "purchase",
-}) {
-  const { error } = await supabase.from("journal_entries").insert([
-    {
-      tenant_id,
-      debit_account,
-      credit_account,
-      amount,
-      description,
-      reference_id,
-      reference_type,
-    },
-  ]);
+// export async function addJournalEntry({
+//   tenant_id,
+//   debit_account,
+//   credit_account,
+//   amount,
+//   description,
+//   reference_id = null,
+//   reference_type = "purchase",
+// }) {
+//   const { error } = await supabase.from("journal_entries").insert([
+//     {
+//       tenant_id,
+//       debit_account,
+//       credit_account,
+//       amount,
+//       description,
+//       reference_id,
+//       reference_type,
+//     },
+//   ]);
 
-  if (error) throw error;
-}
+//   if (error) throw error;
+// }
 
-/**
- * LEDGER entry with running balance by (tenant_id, account_type)
- * account_type is a string, like: 'inventory', 'vat_input', 'cash', 'accounts_payable'
- */
-export async function insertLedgerEntry({
-  tenant_id,
-  account_type,
-  account_id = null, // should be COA id if used, else null
-  entry_type,
-  description,
-  debit = 0,
-  credit = 0,
-  reference_id = null,
-}) {
-  const { data: lastRows, error: lastErr } = await supabase
-    .from("ledger_entries")
-    .select("id, balance")
-    .eq("tenant_id", tenant_id)
-    .eq("account_type", account_type)
-    .order("created_at", { ascending: false })
-    .limit(1);
+// /**
+//  * LEDGER entry with running balance by (tenant_id, account_type)
+//  * account_type is a string, like: 'inventory', 'vat_input', 'cash', 'accounts_payable'
+//  */
+// export async function insertLedgerEntry({
+//   tenant_id,
+//   account_type,
+//   account_id = null, // should be COA id if used, else null
+//   entry_type,
+//   description,
+//   debit = 0,
+//   credit = 0,
+//   reference_id = null,
+// }) {
+//   const { data: lastRows, error: lastErr } = await supabase
+//     .from("ledger_entries")
+//     .select("id, balance")
+//     .eq("tenant_id", tenant_id)
+//     .eq("account_type", account_type)
+//     .order("created_at", { ascending: false })
+//     .limit(1);
 
-  let prevBalance = 0;
-  if (!lastErr && lastRows && lastRows.length > 0) {
-    prevBalance = Number(lastRows[0].balance || 0);
-  }
+//   let prevBalance = 0;
+//   if (!lastErr && lastRows && lastRows.length > 0) {
+//     prevBalance = Number(lastRows[0].balance || 0);
+//   }
 
-  const newBalance =
-    Number(prevBalance) + Number(debit || 0) - Number(credit || 0);
+//   const newBalance =
+//     Number(prevBalance) + Number(debit || 0) - Number(credit || 0);
 
-  const { error: insertErr } = await supabase.from("ledger_entries").insert([
-    {
-      tenant_id,
-      account_type,
-      account_id,
-      entry_type,
-      description,
-      debit,
-      credit,
-      balance: newBalance,
-      reference_id,
-    },
-  ]);
+//   const { error: insertErr } = await supabase.from("ledger_entries").insert([
+//     {
+//       tenant_id,
+//       account_type,
+//       account_id,
+//       entry_type,
+//       description,
+//       debit,
+//       credit,
+//       balance: newBalance,
+//       reference_id,
+//     },
+//   ]);
 
-  if (insertErr) throw insertErr;
-}
+//   if (insertErr) throw insertErr;
+// }
 
 // Small helper for COA mapping (same pattern as purchase_return)
 async function getCoaMap(tenant_id) {
@@ -243,6 +244,7 @@ export const getPurchaseById = async (req, res) => {
 
 // POST /api/purchases - Create new purchase WITH accounting
 export const createPurchase = async (req, res) => {
+  
   try {
     const tenant_id = req.user?.tenant_id;
     if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
@@ -419,158 +421,106 @@ const purchase_id = purchase.id;
     }
 
     // 7️⃣ ACCOUNTING
-    try {
-      const coaMap = await getCoaMap(tenant_id);
-      const desc = `Purchase #${invoice_number}`;
-      const isCreditPurchase = payment_method === "credit";
+ // 7️⃣ ACCOUNTING — NEW SYSTEM (same as invoiceController)
+try {
+  const { data: coaAccounts } = await supabase
+    .from("coa")
+    .select("id, name, type")
+    .eq("tenant_id", tenant_id);
 
-      // Daybook
-      await supabase.from("daybook").insert([
-        {
-          tenant_id,
-          entry_type: "purchase",
-          description: desc,
-          debit: total_amount,
-          credit: 0,
-          reference_id: purchase_id,
-        },
-      ]);
+  const getAcc = (name) => {
+    const acc = coaAccounts.find(
+      (a) => a.name.toLowerCase() === name.toLowerCase()
+    );
+    if (!acc) throw new Error(`COA account missing: ${name}`);
+    return acc;
+  };
 
-      // Ledger - Inventory (debit)
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: "inventory",
-        entry_type: "debit",
-        description: desc,
-        debit: netTotal,
-        credit: 0,
-        reference_id: purchase_id,
-        account_id: null,
-      });
+  const desc = `Purchase #${invoice_number}`;
+  const inventoryAcc = getAcc("Inventory");
+  const vatInputAcc = getAcc("VAT Input");
+  const cashAcc = getAcc("Cash");
+  const apAcc = getAcc("Accounts Payable");
 
-      // Ledger - VAT Input (debit)
-      if (taxTotal > 0) {
-        await insertLedgerEntry({
-          tenant_id,
-          account_type: "vat_input",
-          entry_type: "debit",
-          description: `${desc} VAT`,
-          debit: taxTotal,
-          credit: 0,
-          reference_id: purchase_id,
-          account_id: null,
-        });
-      }
+  const isCredit = payment_method === "credit";
 
-      // Ledger - Cash or Accounts Payable (credit)
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: isCreditPurchase ? "accounts_payable" : "cash",
-        account_id: null, // DO NOT use supplier_id here, account_id is COA FK
-        entry_type: "credit",
-        description: desc,
-        debit: 0,
-        credit: total_amount,
-        reference_id: purchase_id,
-      });
-
-      // Journal - Inventory (Debit) vs Cash/AP (Credit)
-      await addJournalEntry({
-        tenant_id,
-        debit_account: coaId(coaMap, "inventory"),
-        credit_account: isCreditPurchase
-          ? coaId(coaMap, "accounts payable")
-          : coaId(coaMap, "cash"),
-        amount: netTotal,
-        description: `${desc} - Inventory`,
-        reference_id: purchase_id,
-        reference_type: "purchase",
-      });
-
-      // Journal - VAT Input vs Cash/AP
-      if (taxTotal > 0) {
-        await addJournalEntry({
-          tenant_id,
-          debit_account: coaId(coaMap, "vat input"),
-          credit_account: isCreditPurchase
-            ? coaId(coaMap, "accounts payable")
-            : coaId(coaMap, "cash"),
-          amount: taxTotal,
-          description: `${desc} - VAT`,
-          reference_id: purchase_id,
-          reference_type: "purchase",
-        });
-      }
-
-      // VAT REPORT
-      const purchaseDate = new Date(purchase.created_at);
-      const period = `${purchaseDate.getFullYear()}-${String(
-        purchaseDate.getMonth() + 1
-      ).padStart(2, "0")}`;
-
-      const { data: vatRow } = await supabase
-        .from("vat_reports")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .eq("period", period)
-        .maybeSingle();
-
-      if (vatRow) {
-        const newPurchases =
-          Number(vatRow.total_purchases || 0) + Number(netTotal);
-        const newPurchaseVat =
-          Number(vatRow.purchase_vat || 0) + Number(taxTotal);
-        const vatPayable =
-          Number(vatRow.sales_vat || 0) - Number(newPurchaseVat);
-
-        await supabase
-          .from("vat_reports")
-          .update({
-            total_purchases: newPurchases,
-            purchase_vat: newPurchaseVat,
-            vat_payable: vatPayable,
-          })
-          .eq("id", vatRow.id);
-      } else {
-        await supabase.from("vat_reports").insert([
-          {
-            tenant_id,
-            period,
-            total_sales: 0,
-            sales_vat: 0,
-            total_purchases: netTotal,
-            purchase_vat: taxTotal,
-            vat_payable: -taxTotal, // no sales yet, so only input VAT
-          },
-        ]);
-      }
-    } catch (accErr) {
-      console.error("⚠ Accounting error:", accErr);
-      // You might choose to return 500 here if you want accounting to be strict
-    }
-if (payment_method === "cash") {
-
-  // Record payment entry
-  await supabase.from("purchase_payments").insert([
+  // 7.1 DAYBOOK
+  await supabase.from("daybook").insert([
     {
       tenant_id,
-      purchase_id,
-      supplier_id,
-      amount: total_amount,
-      payment_method: "cash"
-    } 
+      entry_type: "purchase",
+      description: desc,
+      debit: total_amount,
+      credit: 0,
+      reference_id: purchase_id,
+    },
   ]);
 
-  // Mark purchase as paid
-  await supabase
-    .from("purchases")
-    .update({
-      amount_paid: total_amount,
-      is_paid: true
-    })
-    .eq("id", purchase_id)
-     .eq("tenant_id", tenant_id);
+  // 7.2 JOURNAL — Inventory
+  await addJournalEntry({
+    tenant_id,
+    debit_account: inventoryAcc.id,
+    credit_account: isCredit ? apAcc.id : cashAcc.id,
+    amount: netTotal,
+    description: `${desc} - Inventory`,
+    reference_id: purchase_id,
+    reference_type: "purchase",
+  });
+
+  // 7.3 JOURNAL — VAT Input
+  if (taxTotal > 0) {
+    await addJournalEntry({
+      tenant_id,
+      debit_account: vatInputAcc.id,
+      credit_account: isCredit ? apAcc.id : cashAcc.id,
+      amount: taxTotal,
+      description: `${desc} - VAT Input`,
+      reference_id: purchase_id,
+      reference_type: "purchase",
+    });
+  }
+
+  // 7.4 VAT REPORT
+  const purchaseDate = new Date(purchase.created_at);
+  const period = `${purchaseDate.getFullYear()}-${String(
+    purchaseDate.getMonth() + 1
+  ).padStart(2, "0")}`;
+
+  const { data: vatRow } = await supabase
+    .from("vat_reports")
+    .select("*")
+    .eq("tenant_id", tenant_id)
+    .eq("period", period)
+    .maybeSingle();
+
+  if (vatRow) {
+    await supabase
+      .from("vat_reports")
+      .update({
+        total_purchases: Number(vatRow.total_purchases || 0) + netTotal,
+        purchase_vat: Number(vatRow.purchase_vat || 0) + taxTotal,
+        vat_payable:
+          Number(vatRow.sales_vat || 0) -
+          (Number(vatRow.purchase_vat || 0) + taxTotal),
+      })
+      .eq("id", vatRow.id);
+  } else {
+    await supabase.from("vat_reports").insert([
+      {
+        tenant_id,
+        period,
+        total_sales: 0,
+        sales_vat: 0,
+        total_purchases: netTotal,
+        purchase_vat: taxTotal,
+        vat_payable: -taxTotal,
+      },
+    ]);
+  }
+} catch (err) {
+  console.error("⚠ Purchase accounting error:", err);
 }
+
 
 
     // 8️⃣ Final response

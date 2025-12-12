@@ -6,46 +6,48 @@ export const createProduct = async (req, res) => {
     const tenant_id = req.user?.tenant_id;
     if (!tenant_id) return res.status(400).json({ error: "Missing tenant_id" });
 
-    const {
-      name,
-      category,
-      brand,
-      description = "",
-      unit = "",
-      tax = 0,
-      cost_price = 0,
-      selling_price = 0,
-      sku = "",
-      barcode = "",
-      status = "Active",
-      supplier_code = "",
-      hsn_code = "",
-      features = "",
-    } = req.body;
+ const { 
+  name,
+  category_id,
+  brand,
+  description = "",
+  unit = "",
+  tax = 0,
+  cost_price = 0,
+  selling_price = 0,
+  sku = "",
+  barcode = "",
+  status = "Active",
+  supplier_code = "",
+  hsn_code = "",
+  features = "",
+} = req.body;
+
 
     if (!name) return res.status(400).json({ error: "Product name required" });
 
     const { data, error } = await supabase
       .from("products")
-      .insert([
-        {
-          tenant_id,
-          name,
-          category,
-          brand,
-          description,
-          unit,
-          tax,
-          cost_price,
-          selling_price,
-          sku,
-          barcode,
-          status,
-          supplier_code,
-          hsn_code,
-          features,
-        },
-      ])
+   .insert([
+  {
+    tenant_id,
+    name,
+    category_id,
+    brand,
+    description,
+    unit,
+    tax,
+    cost_price,
+    selling_price,
+    sku,
+    barcode,
+    status,
+    supplier_code,
+    hsn_code,
+    features,
+  }
+])
+
       .select()
       .single();
 
@@ -142,26 +144,28 @@ export const updateProduct = async (req, res) => {
     const tenant_id = req.user?.tenant_id;
     const { id } = req.params;
 
-    const {
-      name,
-      category,
-      brand,
-      description,
-      unit,
-      tax,
-      cost_price,
-      selling_price,
-      sku,
-      barcode,
-      status,
-      supplier_code,
-      hsn_code,
-      features,
-    } = req.body;
+   const {
+  name,
+  category_id,  // ✅ ADD THIS
+  brand,
+  description,
+  unit,
+  tax,
+  cost_price,
+  selling_price,
+  sku,
+  barcode,
+  status,
+  supplier_code,
+  hsn_code,
+  features,
+} = req.body;
+
 
     const updatePayload = {
       ...(name && { name }),
-      ...(category && { category }),
+    ...(category_id !== undefined && { category_id }),
+
       ...(brand && { brand }),
       ...(description !== undefined && { description }),
       ...(unit && { unit }),

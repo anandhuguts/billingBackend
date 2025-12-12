@@ -4,7 +4,7 @@ import PDFDocument from "pdfkit";
 import fs from "fs";
 import path from "path";
 import { addJournalEntry } from "../services/addJournalEntryService.js";
-import { insertLedgerEntry } from "../services/insertLedgerEntryService.js";
+
 import { calculateEmployeeDiscount } from "../services/calculateEmployeeDiscountServices.js";
 import { applyDiscounts } from "../services/applyDiscountsService.js";
 import { generatePDF } from "../scripts/pdfGenerator.js";
@@ -474,47 +474,15 @@ for (const it of itemsWithDiscounts) {
       const netSales = Math.max(0, saleAmount - totalTax);
 
       // Ledger: Debit CASH / RECEIVABLE
-      const paymentAccountType =
-        payment_method === "credit" ? "Accounts Receivable" : "cash";
+ 
 
-      await insertLedgerEntry({
-        tenant_id,
-        account_type: paymentAccountType,
-        account_id: payment_method === "credit" ? customer_id : null,
-        entry_type: "debit",
-        description: saleDescription,
-        debit: saleAmount,
-        credit: 0,
-        reference_id: invoice.id,
-      });
+
+
 
       // Ledger: Credit SALES
-      if (netSales > 0) {
-        await insertLedgerEntry({
-          tenant_id,
-          account_type: "sales",
-          account_id: null,
-          entry_type: "credit",
-          description: saleDescription,
-          debit: 0,
-          credit: netSales,
-          reference_id: invoice.id,
-        });
-      }
 
-      // Ledger: Credit VAT PAYABLE
-      if (totalTax > 0) {
-        await insertLedgerEntry({
-          tenant_id,
-          account_type: "VAT Payable",
-          account_id: null,
-          entry_type: "credit",
-          description: `VAT for ${saleDescription}`,
-          debit: 0,
-          credit: totalTax,
-          reference_id: invoice.id,
-        });
-      }
+
+
 
       // JOURNAL ENTRIES
 
@@ -626,26 +594,12 @@ if (employee_discount_total > 0) {
         });
 
         // Ledger: DR COGS
-        await insertLedgerEntry({
-          tenant_id,
-          account_type: "cogs",
-          entry_type: "debit",
-          description: `COGS for invoice #${invoice.id}`,
-          debit: lineCost,
-          credit: 0,
-          reference_id: invoice.id,
-        });
+
+
 
         // Ledger: CR Inventory
-        await insertLedgerEntry({
-          tenant_id,
-          account_type: "inventory",
-          entry_type: "credit",
-          description: `Inventory reduction for invoice #${invoice.id}`,
-          debit: 0,
-          credit: lineCost,
-          reference_id: invoice.id,
-        });
+
+
       }
 
       // VAT REPORT (monthly, period = YYYY-MM)
@@ -774,141 +728,4 @@ return res.send(pdfUrl);
   }
 };
 
-/**
- * generatePDF (unchanged)
- */
-// export const generatePDF = async (req, res) => {
-//   try {
-//     const { invoiceNumber, items, subtotal, total, payment_method } = req.body;
 
-//     const invoicesDir = path.join(process.cwd(), "invoices");
-//     if (!fs.existsSync(invoicesDir)) fs.mkdirSync(invoicesDir);
-
-//     const filePath = path.join(invoicesDir, `invoice-${invoiceNumber}.pdf`);
-
-//     // 80mm thermal = approx 226 pts width, height variable
-//     const doc = new PDFDocument({
-//       size: [226, 600],
-//       margin: 10,
-//     });
-
-//     const stream = fs.createWriteStream(filePath);
-//     doc.pipe(stream);
-
-//     let y = 10;
-
-//     const center = (text, size = 10, font = "Courier") => {
-//       doc.font(font).fontSize(size);
-//       doc.text(text, 0, y, { width: 226, align: "center" });
-//       y += size + 2;
-//     };
-
-//     const line = () => {
-//       doc
-//         .font("Courier")
-//         .fontSize(9)
-//         .text("----------------------------------------", 0, y, {
-//           width: 226,
-//           align: "center",
-//         });
-//       y += 12;
-//     };
-
-//     const starLine = () => {
-//       doc
-//         .font("Courier")
-//         .fontSize(10)
-//         .text("********************************", 0, y, {
-//           width: 226,
-//           align: "center",
-//         });
-//       y += 14;
-//     };
-
-//     // ⭐ Top Stars
-//     starLine();
-
-//     // ⭐ Store Name
-//     center("SUPERMART", 16);
-
-//     // ⭐ Bottom Stars
-//     starLine();
-
-//     // Invoice details
-//     doc.font("Courier").fontSize(9).text(`Invoice No: ${invoiceNumber}`, 10, y);
-//     y += 12;
-
-//     doc
-//       .font("Courier")
-//       .fontSize(9)
-//       .text(`Date: ${new Date().toLocaleString()}`, 10, y);
-//     y += 14;
-
-//     // Divider
-//     line();
-
-//     // Items
-//     doc.font("Courier").fontSize(10);
-
-//     items.forEach((item) => {
-//       const name = `${item.qty}x ${item.name}`;
-//       const price = `AED ${Number(item.total).toFixed(2)}`;
-
-//       doc.text(name, 10, y);
-//       doc.text(price, -10, y, { align: "right" });
-//       y += 14;
-//     });
-
-//     // Divider
-//     y += 2;
-//     line();
-
-//     // TOTAL bold
-//     doc.font("Courier-Bold").fontSize(11);
-//     doc.text("TOTAL:", 10, y);
-//     doc.text(`AED ${total.toFixed(2)}`, -10, y, { align: "right" });
-//     y += 16;
-
-//     // Payment Method
-//     doc.font("Courier").fontSize(10);
-//     doc.text("Payment Method:", 10, y);
-//     doc.text(payment_method.toUpperCase(), -10, y, { align: "right" });
-//     y += 14;
-
-//     // Divider
-//     line();
-
-//     // Thank you
-//     doc.font("Courier-Bold").fontSize(10);
-//     center("********* THANK YOU! *********", 10);
-
-//     y += 10;
-
-//     // Simple barcode mimic
-//     const barStartX = 40;
-//     const barWidth = 100;
-
-//     for (let i = 0; i < 40; i++) {
-//       const x = barStartX + i * 2.2;
-//       const lineW = Math.random() > 0.5 ? 1.2 : 0.6;
-
-//       doc
-//         .moveTo(x, y)
-//         .lineTo(x, y + 25)
-//         .lineWidth(lineW)
-//         .stroke();
-//     }
-
-//     doc.end();
-
-//     stream.on("finish", () => {
-//       res.status(200).json({
-//         message: "Invoice PDF generated",
-//         pdf_url: `http://localhost:5000/invoices/invoice-${invoiceNumber}.pdf`,
-//       });
-//     });
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ error: "Failed to generate invoice PDF" });
-//   }
-// };
