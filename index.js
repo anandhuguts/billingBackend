@@ -41,6 +41,7 @@ import salaryRoutes from "./routes/salaryRoutes.js";
 import EmplopyeeDiscountRoutes from "./routes/EmplyeeDiscountRoutes.js";
 import employeesRoutes from "./routes/employeesRoutes.js";
 import cateogeryRouter from "./routes/cateogeryRouter.js";
+import reportRoutesPdfTenant from "./routes/tenatReportPdfRouter.js";
 
 const app = express();
 
@@ -179,6 +180,7 @@ app.use("/api/discounts", verifyToken, discountRoutes);
 // Products (no role restriction)
 app.use("/api/products", product);
 app.use("/api/tenantreport", verifyToken, reportRoutesTenant);
+app.use("/api/tenantReportPdf", verifyToken,reportRoutesPdfTenant);
 app.use("/api/employees/attendance",verifyToken, attendanceRoutes);
 app.use("/api/employees/salary",verifyToken, salaryRoutes);
 app.use("/api/employees/discount",verifyToken, EmplopyeeDiscountRoutes);

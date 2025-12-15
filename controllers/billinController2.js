@@ -376,11 +376,13 @@ export const createInvoice = async (req, res) => {
     } = discountResult;
 
     // employee discount
-    const { discount: employee_discount_total } = await calculateEmployeeDiscount({
-      tenant_id,
-      buyer_employee_id: req.body.employee_id || null,
-      subtotal,
-    });
+const { discount: employee_discount_total } =
+  await calculateEmployeeDiscount({
+    tenant_id,
+    buyer_employee_id: req.body.employee_id || null,
+    subtotal: total_before_redeem, // ✅ SAME AS PREVIEW
+  });
+
 
     let total_amount = total_before_redeem - employee_discount_total;
 

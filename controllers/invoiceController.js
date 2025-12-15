@@ -221,12 +221,17 @@ export const previewInvoice = async (req, res) => {
       eligible: employee_discount_total > 0,
       discount_this_bill: employee_discount_total
     };
+const final_preview_total = Math.max(
+  total_before_redeem - employee_discount_total,
+  0
+);
 
     return res.json({
       success: true,
       preview: {
         subtotal,
-        total: total_before_redeem,
+       total: final_preview_total,
+
         item_discount_total,
         bill_discount_total,
         coupon_discount_total,
