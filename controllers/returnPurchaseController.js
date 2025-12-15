@@ -34,18 +34,55 @@ function coaId(map, name) {
 export const getAllPurchaseReturns = async (req, res) => {
   try {
     const tenant_id = req.user?.tenant_id;
-    if (!tenant_id)
+    if (!tenant_id) {
       return res.status(403).json({ error: "Unauthorized" });
+    }
 
-    // Pagination
+    // -----------------------------
+    // Pagination & Search
+    // -----------------------------
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 10;
+    const search = req.query.search?.trim() || "";
 
     const start = (page - 1) * limit;
     const end = start + limit - 1;
 
-    // Fetch with count included
-    const { data, error, count } = await supabase
+    // -----------------------------
+    // STEP 1: SEARCH PURCHASES BY INVOICE NUMBER
+    // -----------------------------
+    let purchaseIds = [];
+
+    if (search) {
+      const { data: purchases, error: purchaseErr } = await supabase
+        .from("purchases")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .ilike("invoice_number", `%${search}%`);
+
+      if (purchaseErr) {
+        return res.status(500).json({ error: purchaseErr.message });
+      }
+
+      purchaseIds = purchases.map(p => p.id);
+
+      // No matching invoices → empty result
+      if (purchaseIds.length === 0) {
+        return res.json({
+          success: true,
+          page,
+          limit,
+          totalRecords: 0,
+          totalPages: 0,
+          data: []
+        });
+      }
+    }
+
+    // -----------------------------
+    // STEP 2: FETCH PURCHASE RETURNS
+    // -----------------------------
+    let query = supabase
       .from("purchase_returns")
       .select(
         `
@@ -57,11 +94,22 @@ export const getAllPurchaseReturns = async (req, res) => {
         { count: "exact" }
       )
       .eq("tenant_id", tenant_id)
-      .order("created_at", { ascending: false })
-      .range(start, end);
+      .order("created_at", { ascending: false });
 
-    if (error) return res.status(500).json({ error: error.message });
+    // Apply invoice filter safely
+    if (purchaseIds.length > 0) {
+      query = query.in("purchase_id", purchaseIds);
+    }
 
+    const { data, error, count } = await query.range(start, end);
+
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    // -----------------------------
+    // RESPONSE
+    // -----------------------------
     return res.json({
       success: true,
       page,
@@ -72,10 +120,12 @@ export const getAllPurchaseReturns = async (req, res) => {
     });
 
   } catch (err) {
-    console.error("getAllPurchaseReturns error", err);
+    console.error("getAllPurchaseReturns error:", err);
     return res.status(500).json({ error: "Internal server error" });
   }
 };
+
+
 
 
 /* =========================================================
