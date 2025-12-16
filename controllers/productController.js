@@ -73,12 +73,23 @@ export const getProducts = async (req, res) => {
     const start = (page - 1) * limit;
     const end = start + limit - 1;
 
-    let query = supabase
-      .from("products")
-      .select("*", { count: "exact" })
-      .eq("tenant_id", tenant_id)
-      .order("created_at", { ascending: false })
-      .range(start, end);
+let query = supabase
+  .from("products")
+  .select(
+    `
+      *,
+      categories!products_category_fk (
+        id,
+        name
+      )
+    `,
+    { count: "exact" }
+  )
+  .eq("tenant_id", tenant_id)
+  .order("created_at", { ascending: false })
+  .range(start, end);
+
+
 
     // ===============================
     // 🔍 SEARCH SUPPORT
