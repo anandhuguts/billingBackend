@@ -54,34 +54,39 @@ export const getInventory = async (req, res) => {
     const end = start + limit - 1;
 
     // Base query
-    let query = supabase
-      .from("inventory")
-      .select(
-        `
+let query = supabase
+  .from("inventory")
+  .select(
+    `
+    id,
+    quantity,
+    reorder_level,
+    updated_at,
+    product_id,
+    expiry_date,
+    max_stock,
+    products (
+      id,
+      name,
+      brand,
+      unit,
+      cost_price,
+      selling_price,
+      tax,
+      barcode,
+      sku,
+      categories!products_category_fk (
         id,
-        quantity,
-        reorder_level,
-        updated_at,
-        product_id,
-        expiry_date,
-        max_stock,
-        products (
-          name,
-          category,
-          brand,
-          unit,
-          cost_price,
-          selling_price,
-          tax,
-          barcode,
-          sku
-        )
-      `,
-        { count: "exact" }
+        name
       )
-      .eq("tenant_id", tenant_id)
-      .order("updated_at", { ascending: false })
-      .range(start, end);
+    )
+  `,
+    { count: "exact" }
+  )
+  .eq("tenant_id", tenant_id)
+  .order("updated_at", { ascending: false })
+  .range(start, end);
+
 
     // ==========================================
     // 🔍 SEARCH LOGIC
