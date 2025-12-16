@@ -6,42 +6,55 @@ import { supabase } from "../supabase/supabaseClient.js";
 export const getReportSummary = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
+    if (!tenantId)
+      return res.status(403).json({ error: "Unauthorized" });
 
-    const today = new Date().toISOString().split("T")[0];
+    let p_from = null;
+    let p_to = null;
 
-    // SALES TODAY
-    const { data: salesData, error: salesErr } = await supabase
-      .from("invoices")
-      .select("final_amount")
-      .eq("tenant_id", tenantId)
-      .gte("created_at", today);
+    const today = new Date();
 
-    if (salesErr) throw salesErr;
+    // 🔹 RANGE HANDLING
+    if (req.query.range === "7d") {
+      const from = new Date();
+      from.setDate(today.getDate() - 6);
 
-    const totalSales =
-      salesData?.reduce((sum, bill) => sum + Number(bill.final_amount), 0) || 0;
+      p_from = from.toISOString().split("T")[0];
+      p_to = today.toISOString().split("T")[0];
+    }
 
-    // PURCHASES TODAY
-    const { data: purchaseData, error: purchaseErr } = await supabase
-      .from("purchases")
-      .select("total_amount")
-      .eq("tenant_id", tenantId)
-      .gte("created_at", today);
+    if (req.query.range === "30d") {
+      const from = new Date();
+      from.setDate(today.getDate() - 29);
 
-    if (purchaseErr) throw purchaseErr;
+      p_from = from.toISOString().split("T")[0];
+      p_to = today.toISOString().split("T")[0];
+    }
 
-    const totalPurchases =
-      purchaseData?.reduce((sum, p) => sum + Number(p.total_amount), 0) || 0;
+    // 🔹 CUSTOM DATE RANGE
+    if (req.query.from && req.query.to) {
+      p_from = req.query.from;
+      p_to = req.query.to;
+    }
 
-    // PROFIT TODAY
-    const profit = totalSales - totalPurchases;
+    const { data, error } = await supabase.rpc("get_summary", {
+      p_tenant: tenantId,
+      p_from,
+      p_to
+    });
+
+    if (error) throw error;
+
+    const summary = data[0];
 
     res.json({
-      totalSales,
-      totalPurchases,
-      profit,
-      lowStock: 0, // You can calculate from inventory if needed
-      transactions: salesData?.length || 0,
+      totalSales: Number(summary.total_sales || 0),
+      totalPurchases: Number(summary.total_purchases || 0),
+      profit:
+        Number(summary.total_sales || 0) -
+        Number(summary.total_purchases || 0),
+      lowStock: 0,
+      transactions: summary.transactions || 0,
     });
   } catch (err) {
     console.error("Summary error:", err.message);
@@ -49,27 +62,40 @@ export const getReportSummary = async (req, res) => {
   }
 };
 
+
+
+
 /* ============================================================
    2. SALES CHART (Last 7 Days)
 =============================================================== */
 export const getSalesChart = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
+    if (!tenantId)
+      return res.status(403).json({ error: "Unauthorized" });
+
+    // ✅ MAP range → number of days
+    let days = 7; // default
+
+    if (req.query.range === "30d") days = 30;
+    if (req.query.range === "7d") days = 7;
 
     const { data, error } = await supabase
-      .rpc("get_sales_last_7_days", { tid: tenantId });
+      .rpc("get_sales_chart", {
+        p_tenant: tenantId,
+        p_days: days
+      });
 
     if (error) throw error;
 
-    // Fallback if RPC not available
-    const sales = data || [];
-
-    res.json(sales);
+    res.json(data || []);
   } catch (err) {
     console.error("Sales Chart Error:", err.message);
     res.status(500).json({ error: "Failed to load sales graph" });
   }
 };
+
+
 
 /* ============================================================
    3. PURCHASE CHART (Last 7 Days)
@@ -77,27 +103,28 @@ export const getSalesChart = async (req, res) => {
 export const getPurchaseChart = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
+    if (!tenantId)
+      return res.status(403).json({ error: "Unauthorized" });
+
+    let days = 7;
+    if (req.query.range === "30d") days = 30;
+    if (req.query.range === "7d") days = 7;
 
     const { data, error } = await supabase
-      .from("purchases")
-      .select("total_amount, created_at")
-      .eq("tenant_id", tenantId)
-      .order("created_at", { ascending: false })
-      .limit(7);
+      .rpc("get_purchase_chart", {
+        p_tenant: tenantId,
+        p_days: days
+      });
 
     if (error) throw error;
 
-    const formatted = data.map((row) => ({
-      date: row.created_at.split("T")[0],
-      purchase: Number(row.total_amount || 0),
-    }));
-
-    res.json(formatted.reverse());
+    res.json(data || []);
   } catch (err) {
     console.error("Purchase Chart Error:", err.message);
     res.status(500).json({ error: "Failed to load purchase graph" });
   }
 };
+
 
 /* ============================================================
    4. STOCK REPORT (Inventory Overview)
@@ -105,27 +132,21 @@ export const getPurchaseChart = async (req, res) => {
 export const getStockReport = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
+    if (!tenantId)
+      return res.status(403).json({ error: "Unauthorized" });
 
     const { data, error } = await supabase
-      .from("inventory")
-      .select("product_id, quantity, products(name, selling_price)")
-      .eq("tenant_id", tenantId);
+      .rpc("get_stock_report", { p_tenant: tenantId });
 
     if (error) throw error;
 
-    const report = data.map((item) => ({
-      product: item.products?.name,
-      available: Number(item.quantity),
-      value: Number(item.quantity) * Number(item.products?.selling_price || 0),
-      status: Number(item.quantity) < 20 ? "Low" : "Good",
-    }));
-
-    res.json(report);
+    res.json(data || []);
   } catch (err) {
     console.error("Stock Error:", err.message);
     res.status(500).json({ error: "Failed to load stock report" });
   }
 };
+
 
 /* ============================================================
    5. PROFIT REPORT (Revenue - Cost per Product)
@@ -133,22 +154,42 @@ export const getStockReport = async (req, res) => {
 export const getProfitReport = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
+    if (!tenantId)
+      return res.status(403).json({ error: "Unauthorized" });
 
-    // Fetch sold items
-    const { data: soldItems, error } = await supabase
-      .from("invoice_items")
-      .select("product_id, quantity, price, products(cost_price, name)")
-      .eq("tenant_id", tenantId);
+    let p_from = null;
+    let p_to = null;
+
+    const today = new Date();
+
+    if (req.query.range === "7d") {
+      const from = new Date();
+      from.setDate(today.getDate() - 6);
+      p_from = from.toISOString().split("T")[0];
+      p_to = today.toISOString().split("T")[0];
+    }
+
+    if (req.query.range === "30d") {
+      const from = new Date();
+      from.setDate(today.getDate() - 29);
+      p_from = from.toISOString().split("T")[0];
+      p_to = today.toISOString().split("T")[0];
+    }
+
+    if (req.query.from && req.query.to) {
+      p_from = req.query.from;
+      p_to = req.query.to;
+    }
+
+    const { data, error } = await supabase.rpc("get_profit_report", {
+      p_tenant: tenantId,
+      p_from,
+      p_to
+    });
 
     if (error) throw error;
 
-    const report = soldItems.map((item) => ({
-      product: item.products?.name,
-      revenue: Number(item.price) * Number(item.quantity),
-      cost: Number(item.products?.cost_price || 0) * Number(item.quantity),
-    }));
-
-    res.json(report);
+    res.json(data || []);
   } catch (err) {
     console.error("Profit report error:", err.message);
     res.status(500).json({ error: "Failed to load profit report" });
@@ -161,27 +202,43 @@ export const getProfitReport = async (req, res) => {
 export const getPaymentSummary = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
+    if (!tenantId)
+      return res.status(403).json({ error: "Unauthorized" });
 
-    const { data, error } = await supabase
-      .from("invoices")
-      .select("payment_method, final_amount")
-      .eq("tenant_id", tenantId);
+    let p_from = null;
+    let p_to = null;
+
+    const today = new Date();
+
+    // 🔹 range handling
+    if (req.query.range === "7d") {
+      const from = new Date();
+      from.setDate(today.getDate() - 6);
+      p_from = from.toISOString().split("T")[0];
+      p_to = today.toISOString().split("T")[0];
+    }
+
+    if (req.query.range === "30d") {
+      const from = new Date();
+      from.setDate(today.getDate() - 29);
+      p_from = from.toISOString().split("T")[0];
+      p_to = today.toISOString().split("T")[0];
+    }
+
+    if (req.query.from && req.query.to) {
+      p_from = req.query.from;
+      p_to = req.query.to;
+    }
+
+    const { data, error } = await supabase.rpc("get_payment_summary", {
+      p_tenant: tenantId,
+      p_from,
+      p_to
+    });
 
     if (error) throw error;
 
-    const modes = {};
-
-    data.forEach((bill) => {
-      const method = bill.payment_method || "unknown";
-      modes[method] = (modes[method] || 0) + Number(bill.final_amount || 0);
-    });
-
-    const formatted = Object.keys(modes).map((mode) => ({
-      mode,
-      value: modes[mode],
-    }));
-
-    res.json(formatted);
+    res.json(data || []);
   } catch (err) {
     console.error("Payment Summary Error:", err.message);
     res.status(500).json({ error: "Failed to load payment summary" });
@@ -194,53 +251,25 @@ export const getPaymentSummary = async (req, res) => {
 export const getAnalyticsReport = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
+    if (!tenantId)
+      return res.status(403).json({ error: "Unauthorized" });
 
-    // Sales
-    const { data: sales, error: sErr } = await supabase
-      .from("invoices")
-      .select("final_amount, created_at")
-      .eq("tenant_id", tenantId);
+    let days = 7;
+    if (req.query.range === "30d") days = 30;
+    if (req.query.range === "7d") days = 7;
 
-    if (sErr) throw sErr;
-
-    // Purchases
-    const { data: purchases, error: pErr } = await supabase
-      .from("purchases")
-      .select("total_amount, created_at")
-      .eq("tenant_id", tenantId);
-
-    if (pErr) throw pErr;
-
-    const chart = [];
-
-    sales.forEach((s) => {
-      chart.push({
-        date: s.created_at.split("T")[0],
-        sales: Number(s.final_amount || 0),
-        purchase: 0,
+    const { data, error } = await supabase
+      .rpc("get_analytics_chart", {
+        p_tenant: tenantId,
+        p_days: days
       });
-    });
 
-    purchases.forEach((p) => {
-      chart.push({
-        date: p.created_at.split("T")[0],
-        sales: 0,
-        purchase: Number(p.total_amount || 0),
-      });
-    });
+    if (error) throw error;
 
-    // Combine by date
-    const merged = {};
-
-    chart.forEach((row) => {
-      if (!merged[row.date]) merged[row.date] = { date: row.date, sales: 0, purchase: 0 };
-      merged[row.date].sales += row.sales;
-      merged[row.date].purchase += row.purchase;
-    });
-
-    res.json(Object.values(merged).sort((a, b) => new Date(a.date) - new Date(b.date)));
+    res.json(data || []);
   } catch (err) {
     console.error("Analytics error:", err.message);
     res.status(500).json({ error: "Failed to load analytics" });
   }
 };
+
