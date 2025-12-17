@@ -71,22 +71,40 @@ export const getReportSummary = async (req, res) => {
 export const getSalesChart = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
-    if (!tenantId)
+    if (!tenantId) {
       return res.status(403).json({ error: "Unauthorized" });
+    }
 
-    // ✅ MAP range → number of days
-    let days = 7; // default
+    const { range, from, to } = req.query;
 
-    if (req.query.range === "30d") days = 30;
-    if (req.query.range === "7d") days = 7;
+    // Base params (always required)
+    const params = {
+      p_tenant: tenantId,
+    };
 
-    const { data, error } = await supabase
-      .rpc("get_sales_chart", {
-        p_tenant: tenantId,
-        p_days: days
-      });
+    // 🔹 HIGHEST PRIORITY: custom date range
+    if (from && to) {
+      params.p_from = from; // YYYY-MM-DD
+      params.p_to = to;     // YYYY-MM-DD
+    }
+    // 🔹 FALLBACK: predefined ranges
+    else {
+      let days = 7; // default
+      if (range === "30d") days = 30;
+      if (range === "7d") days = 7;
 
-    if (error) throw error;
+      params.p_days = days;
+    }
+
+    const { data, error } = await supabase.rpc(
+      "get_sales_chart",
+      params
+    );
+
+    if (error) {
+      console.error("RPC error:", error);
+      throw error;
+    }
 
     res.json(data || []);
   } catch (err) {
@@ -97,26 +115,46 @@ export const getSalesChart = async (req, res) => {
 
 
 
+
 /* ============================================================
    3. PURCHASE CHART (Last 7 Days)
 =============================================================== */
 export const getPurchaseChart = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
-    if (!tenantId)
+    if (!tenantId) {
       return res.status(403).json({ error: "Unauthorized" });
+    }
 
-    let days = 7;
-    if (req.query.range === "30d") days = 30;
-    if (req.query.range === "7d") days = 7;
+    const { range, from, to } = req.query;
 
-    const { data, error } = await supabase
-      .rpc("get_purchase_chart", {
-        p_tenant: tenantId,
-        p_days: days
-      });
+    const params = {
+      p_tenant: tenantId,
+    };
 
-    if (error) throw error;
+    // 🔹 Highest priority: custom date range
+    if (from && to) {
+      params.p_from = from; // YYYY-MM-DD
+      params.p_to = to;     // YYYY-MM-DD
+    }
+    // 🔹 Fallback: predefined ranges
+    else {
+      let days = 7;
+      if (range === "30d") days = 30;
+      if (range === "7d") days = 7;
+
+      params.p_days = days;
+    }
+
+    const { data, error } = await supabase.rpc(
+      "get_purchase_chart",
+      params
+    );
+
+    if (error) {
+      console.error("RPC error:", error);
+      throw error;
+    }
 
     res.json(data || []);
   } catch (err) {
@@ -124,6 +162,7 @@ export const getPurchaseChart = async (req, res) => {
     res.status(500).json({ error: "Failed to load purchase graph" });
   }
 };
+
 
 
 /* ============================================================
@@ -202,41 +241,56 @@ export const getProfitReport = async (req, res) => {
 export const getPaymentSummary = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
-    if (!tenantId)
+    if (!tenantId) {
       return res.status(403).json({ error: "Unauthorized" });
+    }
 
-    let p_from = null;
-    let p_to = null;
-
+    const { range, from, to } = req.query;
     const today = new Date();
 
-    // 🔹 range handling
-    if (req.query.range === "7d") {
-      const from = new Date();
-      from.setDate(today.getDate() - 6);
-      p_from = from.toISOString().split("T")[0];
+    let p_from;
+    let p_to;
+
+    // 🔹 Highest priority: custom date range
+    if (from && to) {
+      p_from = from; // YYYY-MM-DD
+      p_to = to;     // YYYY-MM-DD
+    }
+    // 🔹 Predefined ranges
+    else if (range === "7d") {
+      const start = new Date(today);
+      start.setDate(today.getDate() - 6);
+
+      p_from = start.toISOString().split("T")[0];
       p_to = today.toISOString().split("T")[0];
     }
+    else if (range === "30d") {
+      const start = new Date(today);
+      start.setDate(today.getDate() - 29);
 
-    if (req.query.range === "30d") {
-      const from = new Date();
-      from.setDate(today.getDate() - 29);
-      p_from = from.toISOString().split("T")[0];
+      p_from = start.toISOString().split("T")[0];
       p_to = today.toISOString().split("T")[0];
     }
-
-    if (req.query.from && req.query.to) {
-      p_from = req.query.from;
-      p_to = req.query.to;
+    // 🔹 Default: today
+    else {
+      const todayStr = today.toISOString().split("T")[0];
+      p_from = todayStr;
+      p_to = todayStr;
     }
 
-    const { data, error } = await supabase.rpc("get_payment_summary", {
-      p_tenant: tenantId,
-      p_from,
-      p_to
-    });
+    const { data, error } = await supabase.rpc(
+      "get_payment_summary",
+      {
+        p_tenant: tenantId,
+        p_from,
+        p_to,
+      }
+    );
 
-    if (error) throw error;
+    if (error) {
+      console.error("RPC error:", error);
+      throw error;
+    }
 
     res.json(data || []);
   } catch (err) {
@@ -245,26 +299,46 @@ export const getPaymentSummary = async (req, res) => {
   }
 };
 
+
 /* ============================================================
    7. OVERALL ANALYTICS (Sales vs Purchases)
 =============================================================== */
 export const getAnalyticsReport = async (req, res) => {
   try {
     const tenantId = req.user.tenant_id;
-    if (!tenantId)
+    if (!tenantId) {
       return res.status(403).json({ error: "Unauthorized" });
+    }
 
-    let days = 7;
-    if (req.query.range === "30d") days = 30;
-    if (req.query.range === "7d") days = 7;
+    const { range, from, to } = req.query;
+    const today = new Date();
 
-    const { data, error } = await supabase
-      .rpc("get_analytics_chart", {
-        p_tenant: tenantId,
-        p_days: days
-      });
+    const params = {
+      p_tenant: tenantId,
+    };
 
-    if (error) throw error;
+    // 🔹 Highest priority: custom range
+    if (from && to) {
+      params.p_from = from;
+      params.p_to = to;
+    }
+    // 🔹 Predefined ranges
+    else {
+      let days = 7;
+      if (range === "30d") days = 30;
+      if (range === "7d") days = 7;
+      params.p_days = days;
+    }
+
+    const { data, error } = await supabase.rpc(
+      "get_analytics_chart",
+      params
+    );
+
+    if (error) {
+      console.error("RPC error:", error);
+      throw error;
+    }
 
     res.json(data || []);
   } catch (err) {
