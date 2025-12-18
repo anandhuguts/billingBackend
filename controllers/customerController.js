@@ -5,22 +5,38 @@ export const CustomerController = {
      GET ALL CUSTOMERS (TENANT-BASED)
   ====================================================== */
   async getAll(req, res) {
-    try {
-      const { tenant_id } = req.user;
+  try {
+    const { tenant_id } = req.user;
 
-      const { data, error } = await supabase
-        .from("customers")
-        .select("*")
-        .eq("tenant_id", tenant_id)
-        .order("created_at", { ascending: false });
+    // Pagination params
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 20;
 
-      if (error) throw error;
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
 
-      return res.json({ success: true, data });
-    } catch (error) {
-      return res.status(500).json({ error: error.message });
-    }
-  },
+    const { data, error, count } = await supabase
+      .from("customers")
+      .select("*", { count: "exact" })
+      .eq("tenant_id", tenant_id)
+      .order("created_at", { ascending: false })
+      .range(start, end);
+
+    if (error) throw error;
+
+    return res.json({
+      success: true,
+      page,
+      limit,
+      totalRecords: count || 0,
+      totalPages: Math.ceil((count || 0) / limit),
+      data,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+,
 
   /* ======================================================
      CREATE CUSTOMER (WITH UNIQUE PHONE HANDLING)
