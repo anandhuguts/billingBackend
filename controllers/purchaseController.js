@@ -80,6 +80,8 @@ import { addJournalEntry } from "../services/addJournalEntryService.js";
 //   if (insertErr) throw insertErr;
 // }
 
+
+
 // Small helper for COA mapping (same pattern as purchase_return)
 async function getCoaMap(tenant_id) {
   const { data, error } = await supabase
@@ -259,29 +261,31 @@ export const getPurchaseById = async (req, res) => {
 
 // POST /api/purchases - Create new purchase WITH accounting
 export const createPurchase = async (req, res) => {
-  
   try {
     const tenant_id = req.user?.tenant_id;
-    if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
-    console.log(req.body);
+    if (!tenant_id) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
     const {
       supplier_id,
       items,
-      payment_method = "cash", // 'cash' or 'credit'
-      invoice_number: clientInvoiceNumber,
+      payment_method = "cash", // cash | upi | card | bank | credit
     } = req.body;
-    console.log(req.body);
-
-    if (!items || items.length === 0) {
-      return res.status(400).json({ error: "No purchase items provided" });
-    }
+    console.log("Received purchase creation request:", req.body);
 
     if (!supplier_id) {
       return res.status(400).json({ error: "supplier_id is required" });
     }
 
-    // 1️⃣ Fetch product tax
-    const productIds = [...new Set(items.map((i) => i.product_id))];
+    if (!items || items.length === 0) {
+      return res.status(400).json({ error: "No purchase items provided" });
+    }
+
+    /* ======================================================
+       1️⃣ FETCH PRODUCT TAX
+    ====================================================== */
+    const productIds = [...new Set(items.map(i => i.product_id))];
 
     const { data: products, error: prodErr } = await supabase
       .from("products")
@@ -291,21 +295,21 @@ export const createPurchase = async (req, res) => {
 
     if (prodErr) throw prodErr;
     if (!products || products.length === 0) {
-      return res
-        .status(400)
-        .json({ error: "Products not found for this tenant" });
+      return res.status(400).json({ error: "Products not found" });
     }
 
     const taxMap = {};
-    for (const p of products) {
+    products.forEach(p => {
       taxMap[p.id] = Number(p.tax || 0);
-    }
+    });
 
-    // 2️⃣ Compute totals
+    /* ======================================================
+       2️⃣ CALCULATE TOTALS (NET + VAT)
+    ====================================================== */
     let netTotal = 0;
     let taxTotal = 0;
 
-    const normalizedItems = items.map((item) => {
+    const normalizedItems = items.map(item => {
       const qty = Number(item.quantity || 0);
       const cost = Number(item.cost_price || 0);
       const lineNet = qty * cost;
@@ -316,67 +320,56 @@ export const createPurchase = async (req, res) => {
       netTotal += lineNet;
       taxTotal += lineTax;
 
-      return {
-        ...item,
-        quantity: qty,
-        cost_price: cost,
-        _lineNet: lineNet,
-        _lineTax: lineTax,
-      };
+   return {
+  product_id: item.product_id,
+  quantity: qty,
+  cost_price: cost,
+  expiry_date: item.expiry_date ?? null,
+  reorder_level: item.reorder_level ?? null,
+  max_stock: item.max_stock ?? null,
+};
+
     });
 
     netTotal = Number(netTotal.toFixed(2));
     taxTotal = Number(taxTotal.toFixed(2));
     const total_amount = Number((netTotal + taxTotal).toFixed(2));
 
-    // 3️⃣ Auto-generate invoice number
-
+    /* ======================================================
+       3️⃣ GENERATE PURCHASE INVOICE NUMBER
+    ====================================================== */
     const seq = await getNextPurchaseSequence(tenant_id);
     const year = new Date().getFullYear();
     const invoice_number = `PUR-${year}-${String(seq).padStart(4, "0")}`;
-    // 4️⃣ Insert purchase
 
-    // 4️⃣ Insert purchase WITHOUT invoice_number first
- const { data: purchase, error: purchaseErr } = await supabase
-  .from("purchases")
-  .insert([
-    {
-      tenant_id,
-      supplier_id,
-      total_amount,
-      invoice_number,   // ← Insert invoice number here
-      amount_paid: 0,
-      is_paid: false,
-    },
-  ])
-  .select("id, created_at")
-  .single();
+    /* ======================================================
+       4️⃣ INSERT PURCHASE
+    ====================================================== */
+    const { data: purchase, error: purchaseErr } = await supabase
+      .from("purchases")
+      .insert([{
+        tenant_id,
+        supplier_id,
+        invoice_number,
+        total_amount,
+        amount_paid: 0,
+        is_paid: false,
+      }])
+      .select("id, created_at")
+      .single();
 
-if (purchaseErr) throw purchaseErr;
+    if (purchaseErr) throw purchaseErr;
+    const purchase_id = purchase.id;
 
-const purchase_id = purchase.id;
-
-
-    // 4.1️⃣ Now update invoice_number using sequence
-//  const { error: invErr } = await supabase
-//   .from("purchases")
-//   .update({ invoice_number })
-//   .eq("id", purchase_id)
-//   .eq("tenant_id", tenant_id)
-//   .select("*")
-//   .single();
-
-// if (invErr) throw invErr;
-
-
-    // 5️⃣ Insert purchase_items
-    const purchaseItemsData = normalizedItems.map((item) => ({
+    /* ======================================================
+       5️⃣ INSERT PURCHASE ITEMS
+    ====================================================== */
+    const purchaseItemsData = normalizedItems.map(it => ({
       tenant_id,
       purchase_id,
-      product_id: item.product_id,
-      quantity: item.quantity,
-      cost_price: item.cost_price,
-      // total column in DB = quantity * cost_price
+      product_id: it.product_id,
+      quantity: it.quantity,
+      cost_price: it.cost_price,
     }));
 
     const { error: itemsErr } = await supabase
@@ -385,143 +378,142 @@ const purchase_id = purchase.id;
 
     if (itemsErr) throw itemsErr;
 
-    // 6️⃣ Update inventory + stock movements
-    for (const item of normalizedItems) {
-      const { product_id, quantity, expiry_date, reorder_level, max_stock } =
-        item;
+    /* ======================================================
+       6️⃣ INVENTORY + STOCK MOVEMENTS
+    ====================================================== */
+    for (const it of normalizedItems) {
+  const { data: existing } = await supabase
+    .from("inventory")
+    .select("id, quantity, expiry_date, reorder_level, max_stock")
+    .eq("tenant_id", tenant_id)
+    .eq("product_id", it.product_id)
+    .maybeSingle();
 
-      const { data: existing } = await supabase
-        .from("inventory")
-        .select("id, quantity, reorder_level, expiry_date, max_stock")
-        .eq("tenant_id", tenant_id)
-        .eq("product_id", product_id)
-        .maybeSingle();
-
-      if (existing) {
-        const newQty = Number(existing.quantity || 0) + Number(quantity);
-
-        await supabase
-          .from("inventory")
-          .update({
-            quantity: newQty,
-            reorder_level: reorder_level ?? existing.reorder_level,
-            expiry_date: expiry_date ?? existing.expiry_date,
-            max_stock: max_stock ?? existing.max_stock,
-            updated_at: new Date(),
-          })
-          .eq("id", existing.id);
-      } else {
-        await supabase.from("inventory").insert([
-          {
-            tenant_id,
-            product_id,
-            quantity,
-            reorder_level,
-            expiry_date,
-            max_stock,
-          },
-        ]);
-      }
-
-      await supabase.from("stock_movements").insert([
-        {
-          tenant_id,
-          product_id,
-          movement_type: "purchase",
-          reference_table: "purchases",
-          reference_id: purchase_id,
-          quantity,
-        },
-      ]);
-    }
-
-    // 7️⃣ ACCOUNTING
- // 7️⃣ ACCOUNTING — NEW SYSTEM (same as invoiceController)
-try {
-  const { data: coaAccounts } = await supabase
-    .from("coa")
-    .select("id, name, type")
-    .eq("tenant_id", tenant_id);
-
-  const getAcc = (name) => {
-    const acc = coaAccounts.find(
-      (a) => a.name.toLowerCase() === name.toLowerCase()
-    );
-    if (!acc) throw new Error(`COA account missing: ${name}`);
-    return acc;
-  };
-
-  const desc = `Purchase #${invoice_number}`;
-  const inventoryAcc = getAcc("Inventory");
-  const vatInputAcc = getAcc("VAT Input");
-  const cashAcc = getAcc("Cash");
-  const apAcc = getAcc("Accounts Payable");
-
-  const isCredit = payment_method === "credit";
-
-  // 7.1 DAYBOOK
-  await supabase.from("daybook").insert([
-    {
+  if (existing) {
+    await supabase
+      .from("inventory")
+      .update({
+        quantity: Number(existing.quantity || 0) + it.quantity,
+        expiry_date: it.expiry_date ?? existing.expiry_date,
+        reorder_level: it.reorder_level ?? existing.reorder_level,
+        max_stock: it.max_stock ?? existing.max_stock,
+        updated_at: new Date(),
+      })
+      .eq("id", existing.id);
+  } else {
+    await supabase.from("inventory").insert([{
       tenant_id,
-      entry_type: "purchase",
-      description: desc,
-      debit: total_amount,
-      credit: 0,
-      reference_id: purchase_id,
-    },
-  ]);
+      product_id: it.product_id,
+      quantity: it.quantity,
+      expiry_date: it.expiry_date,
+      reorder_level: it.reorder_level,
+      max_stock: it.max_stock,
+    }]);
+  }
 
-  // 7.2 JOURNAL — Inventory
-  await addJournalEntry({
+  await supabase.from("stock_movements").insert([{
     tenant_id,
-    debit_account: inventoryAcc.id,
-    credit_account: isCredit ? apAcc.id : cashAcc.id,
-    amount: netTotal,
-    description: `${desc} - Inventory`,
+    product_id: it.product_id,
+    movement_type: "purchase",
+    reference_table: "purchases",
     reference_id: purchase_id,
-    reference_type: "purchase",
-  });
+    quantity: it.quantity,
+  }]);
+}
 
-  // 7.3 JOURNAL — VAT Input
-  if (taxTotal > 0) {
+
+    /* ======================================================
+       7️⃣ ACCOUNTING (JOURNAL-ONLY SYSTEM)
+    ====================================================== */
+    const { data: coaAccounts } = await supabase
+      .from("coa")
+      .select("id, name")
+      .eq("tenant_id", tenant_id);
+
+    const getAcc = (name) => {
+      const acc = coaAccounts.find(
+        a => a.name.toLowerCase() === name.toLowerCase()
+      );
+      if (!acc) throw new Error(`COA missing: ${name}`);
+      return acc.id;
+    };
+
+    const inventoryAcc = getAcc("Inventory");
+    const vatInputAcc = getAcc("VAT Input");
+    const apAcc = getAcc("Accounts Payable");
+    const cashAcc = getAcc("Cash");
+    const bankAcc = coaAccounts.find(a => a.name.toLowerCase() === "bank")?.id;
+
+    const paymentAcc =
+      payment_method === "credit"
+        ? apAcc
+        : ["upi", "card", "bank"].includes(payment_method)
+          ? bankAcc
+          : cashAcc;
+          if (!paymentAcc) {
+  throw new Error("Payment account (Cash/Bank/AP) missing in COA");
+}
+
+    const desc = `Purchase #${invoice_number}`;
+
+    // DAYBOOK
+await supabase.from("daybook").insert([{
+  tenant_id,
+  entry_type: "purchase",
+  description: desc,
+  debit: 0,
+  credit: total_amount,
+  reference_id: purchase_id,
+}]);
+
+
+    // INVENTORY
     await addJournalEntry({
       tenant_id,
-      debit_account: vatInputAcc.id,
-      credit_account: isCredit ? apAcc.id : cashAcc.id,
-      amount: taxTotal,
-      description: `${desc} - VAT Input`,
+      debit_account: inventoryAcc,
+      credit_account: paymentAcc,
+      amount: netTotal,
+      description: `${desc} - Inventory`,
       reference_id: purchase_id,
       reference_type: "purchase",
     });
-  }
 
-  // 7.4 VAT REPORT
-  const purchaseDate = new Date(purchase.created_at);
-  const period = `${purchaseDate.getFullYear()}-${String(
-    purchaseDate.getMonth() + 1
-  ).padStart(2, "0")}`;
+    // VAT INPUT
+    if (taxTotal > 0) {
+      await addJournalEntry({
+        tenant_id,
+        debit_account: vatInputAcc,
+        credit_account: paymentAcc,
+        amount: taxTotal,
+        description: `${desc} - VAT Input`,
+        reference_id: purchase_id,
+        reference_type: "purchase",
+      });
+    }
 
-  const { data: vatRow } = await supabase
-    .from("vat_reports")
-    .select("*")
-    .eq("tenant_id", tenant_id)
-    .eq("period", period)
-    .maybeSingle();
+    /* ======================================================
+       8️⃣ VAT REPORT
+    ====================================================== */
+    const d = new Date(purchase.created_at);
+    const period = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 
-  if (vatRow) {
-    await supabase
+    const { data: vatRow } = await supabase
       .from("vat_reports")
-      .update({
+      .select("*")
+      .eq("tenant_id", tenant_id)
+      .eq("period", period)
+      .maybeSingle();
+
+    if (vatRow) {
+      await supabase.from("vat_reports").update({
         total_purchases: Number(vatRow.total_purchases || 0) + netTotal,
         purchase_vat: Number(vatRow.purchase_vat || 0) + taxTotal,
         vat_payable:
           Number(vatRow.sales_vat || 0) -
           (Number(vatRow.purchase_vat || 0) + taxTotal),
-      })
-      .eq("id", vatRow.id);
-  } else {
-    await supabase.from("vat_reports").insert([
-      {
+      }).eq("id", vatRow.id);
+    } else {
+      await supabase.from("vat_reports").insert([{
         tenant_id,
         period,
         total_sales: 0,
@@ -529,16 +521,12 @@ try {
         total_purchases: netTotal,
         purchase_vat: taxTotal,
         vat_payable: -taxTotal,
-      },
-    ]);
-  }
-} catch (err) {
-  console.error("⚠ Purchase accounting error:", err);
-}
+      }]);
+    }
 
-
-
-    // 8️⃣ Final response
+    /* ======================================================
+       ✅ FINAL RESPONSE
+    ====================================================== */
     return res.status(201).json({
       success: true,
       message: "Purchase created successfully",
@@ -550,11 +538,15 @@ try {
         total_amount,
       },
     });
+
   } catch (err) {
     console.error("❌ Purchase creation failed:", err);
-    return res.status(500).json({ error: err.message || "Server Error" });
+    return res.status(500).json({
+      error: err.message || "Server error",
+    });
   }
 };
+
 
 // PUT /api/purchases/:id - Update purchase
 export const updatePurchase = async (req, res) => {
@@ -694,16 +686,20 @@ export const getPurchaseStats = async (req, res) => {
 export const payPurchase = async (req, res) => {
   try {
     const tenant_id = req.user?.tenant_id;
-    if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
+    if (!tenant_id) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
 
     const { id } = req.params;
     const { amount, payment_method = "cash" } = req.body;
 
-    if (!amount || amount <= 0) {
+    if (!amount || Number(amount) <= 0) {
       return res.status(400).json({ error: "Invalid payment amount" });
     }
 
-    // 1️⃣ Fetch purchase
+    /* ======================================================
+       1️⃣ FETCH PURCHASE
+    ====================================================== */
     const { data: purchase, error: purchaseErr } = await supabase
       .from("purchases")
       .select("id, total_amount, supplier_id")
@@ -711,74 +707,122 @@ export const payPurchase = async (req, res) => {
       .eq("tenant_id", tenant_id)
       .single();
 
-    if (purchaseErr || !purchase)
+    if (purchaseErr || !purchase) {
       return res.status(404).json({ error: "Purchase not found" });
+    }
 
     const supplier_id = purchase.supplier_id;
 
-    // 2️⃣ Insert payment record
-    const { error: payErr } = await supabase.from("purchase_payments").insert([
-      {
+    /* ======================================================
+       2️⃣ INSERT PAYMENT RECORD
+    ====================================================== */
+    const { error: payErr } = await supabase
+      .from("purchase_payments")
+      .insert([{
         tenant_id,
         purchase_id: id,
         supplier_id,
         amount,
         payment_method,
-      },
-    ]);
+      }]);
 
     if (payErr) throw payErr;
 
-    // 3️⃣ COA mapping
-    const coaMap = await getCoaMap(tenant_id);
+    /* ======================================================
+       3️⃣ COA LOOKUP
+    ====================================================== */
+    const { data: coaAccounts, error: coaErr } = await supabase
+      .from("coa")
+      .select("id, name")
+      .eq("tenant_id", tenant_id);
+
+    if (coaErr) throw coaErr;
+
+    const getAcc = (name) => {
+      const acc = coaAccounts.find(
+        a => a.name.toLowerCase() === name.toLowerCase()
+      );
+      if (!acc) throw new Error(`COA missing: ${name}`);
+      return acc.id;
+    };
+
+    const apAcc = getAcc("Accounts Payable");
+    const cashAcc = getAcc("Cash");
+    const bankAcc = coaAccounts.find(
+      a => a.name.toLowerCase() === "bank"
+    )?.id;
+
+    /* ======================================================
+       4️⃣ DETERMINE PAYMENT ACCOUNT
+    ====================================================== */
+    const paymentAcc =
+      ["upi", "card", "bank"].includes(payment_method)
+        ? bankAcc
+        : cashAcc;
+
+    if (!paymentAcc) {
+      throw new Error("Payment account (Cash/Bank) not found in COA");
+    }
+
     const desc = `Payment for Purchase #${id}`;
 
-    // 4️⃣ Journal entry: Debit AP, Credit Cash
+    /* ======================================================
+       5️⃣ JOURNAL ENTRY (AP → CASH / BANK)
+    ====================================================== */
     await addJournalEntry({
       tenant_id,
-      debit_account: coaId(coaMap, "accounts payable"),
-      credit_account: coaId(coaMap, "cash"),
+      debit_account: apAcc,        // AP decreases
+      credit_account: paymentAcc, // Cash / Bank decreases
       amount,
       description: desc,
       reference_id: id,
       reference_type: "purchase_payment",
     });
 
-    // 5️⃣ Ledger: Debit Accounts Payable
-    await insertLedgerEntry({
-      tenant_id,
-      account_type: "accounts_payable",
-      account_id: null, // don't use supplier_id here; account_id is COA FK
-      entry_type: "debit",
-      description: desc,
-      debit: amount,
-      credit: 0,
-      reference_id: id,
-    });
+    /* ======================================================
+       6️⃣ UPDATE PURCHASE PAID STATUS
+    ====================================================== */
+    const { data: payments } = await supabase
+      .from("purchase_payments")
+      .select("amount")
+      .eq("tenant_id", tenant_id)
+      .eq("purchase_id", id);
 
-    // 6️⃣ Ledger: Credit Cash
-    await insertLedgerEntry({
-      tenant_id,
-      account_type: "cash",
-      account_id: null,
-      entry_type: "credit",
-      description: desc,
-      debit: 0,
-      credit: amount,
-      reference_id: id,
-    });
+    const totalPaid =
+      payments?.reduce((sum, p) => sum + Number(p.amount || 0), 0) || 0;
 
+    const isPaid = totalPaid >= Number(purchase.total_amount || 0);
+
+    await supabase
+      .from("purchases")
+      .update({
+        amount_paid: totalPaid,
+        is_paid: isPaid,
+        updated_at: new Date(),
+      })
+      .eq("id", id)
+      .eq("tenant_id", tenant_id);
+
+    /* ======================================================
+       ✅ FINAL RESPONSE
+    ====================================================== */
     return res.status(201).json({
       success: true,
-      message: "Payment recorded successfully",
+      message: "Purchase payment recorded successfully",
       purchase_id: id,
       paid_amount: amount,
+      total_paid: totalPaid,
+      is_fully_paid: isPaid,
     });
+
   } catch (err) {
     console.error("❌ Payment failed:", err);
-    return res.status(500).json({ error: err.message || "Server Error" });
+    return res.status(500).json({
+      error: err.message || "Server Error",
+    });
   }
 };
+
 
 export const getPurchasePayments = async (req, res) => {
   try {

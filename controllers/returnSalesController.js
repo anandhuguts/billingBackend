@@ -465,55 +465,75 @@ export const createSalesReturn = async (req, res) => {
 
 
 // 9A — Refund (cash or credit note)
-if (refund_type === "cash") {
-  await addJournalEntry({
-    tenant_id,
-    debit_account: coaId(coaMap, "sales returns"),   // or "sales"
-    credit_account: coaId(coaMap, "cash"),
-    amount: refundAmount,
-    description: `${desc} - Refund to customer`,
-    reference_id: sales_return_id,
-    reference_type: "sales_return",
-  });
-} else {
-  await addJournalEntry({
-    tenant_id,
-    debit_account: coaId(coaMap, "sales returns"),   // or "sales"
-    credit_account: coaId(coaMap, "accounts receivable"),
-    amount: refundAmount,
-    description: `${desc} - Credit note issued`,
-    reference_id: sales_return_id,
-    reference_type: "sales_return",
-  });
-}
+// if (refund_type === "cash") {
+//   await addJournalEntry({
+//     tenant_id,
+//     debit_account: coaId(coaMap, "sales returns"),   // or "sales"
+//     credit_account: coaId(coaMap, "cash"),
+//     amount: refundAmount,
+//     description: `${desc} - Refund to customer`,
+//     reference_id: sales_return_id,
+//     reference_type: "sales_return",
+//   });
+// } else {
+//   await addJournalEntry({
+//     tenant_id,
+//     debit_account: coaId(coaMap, "sales returns"),   // or "sales"
+//     credit_account: coaId(coaMap, "accounts receivable"),
+//     amount: refundAmount,
+//     description: `${desc} - Credit note issued`,
+//     reference_id: sales_return_id,
+//     reference_type: "sales_return",
+//   });
+// }
+// Decide where refund is settled (ONE place only)
+const settlementAccount =
+  refund_type === "cash"
+    ? coaId(coaMap, "cash")
+    : coaId(coaMap, "accounts receivable");
 
-// 9B — Reverse Sales Revenue
+// A) Reverse sales revenue (no cash here)
 await addJournalEntry({
   tenant_id,
-  debit_account: coaId(coaMap, "sales"),
-  credit_account: refund_type === "cash"
-    ? coaId(coaMap, "cash")
-    : coaId(coaMap, "accounts receivable"),
+  debit_account: coaId(coaMap, "sales returns"), // contra revenue
+  credit_account: coaId(coaMap, "sales"),
   amount: totalNetRounded,
   description: `${desc} - Reverse sales revenue`,
   reference_id: sales_return_id,
   reference_type: "sales_return",
 });
 
-// 9C — Reverse VAT Output
+// B) Reverse VAT output (cash touched here ONCE)
+
+// B) Reverse VAT output (NO extra cash logic)
 if (totalVatRounded > 0) {
   await addJournalEntry({
     tenant_id,
     debit_account: coaId(coaMap, "vat output"),
-    credit_account: refund_type === "cash"
-      ? coaId(coaMap, "cash")
-      : coaId(coaMap, "accounts receivable"),
+    credit_account: settlementAccount,
     amount: totalVatRounded,
-    description: `${desc} - Reverse VAT Output`,
+    description: `${desc} - Reverse VAT output`,
     reference_id: sales_return_id,
     reference_type: "sales_return",
   });
 }
+
+// C) Refund / credit customer (cash touched here ONCE)
+await addJournalEntry({
+  tenant_id,
+  debit_account: coaId(coaMap, "sales returns"),
+  credit_account: settlementAccount,
+  amount: totalNetRounded,
+  description: `${desc} - Customer refund / credit`,
+  reference_id: sales_return_id,
+  reference_type: "sales_return",
+});
+
+// 9B — Reverse Sales Revenue
+
+
+// 9C — Reverse VAT Output
+
 
 // 9D — Reverse COGS & Increase Inventory
 if (totalCostRounded > 0) {

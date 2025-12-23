@@ -48,13 +48,40 @@ export const getInventory = async (req, res) => {
 
     const page = Number(req.query.page) || 1;
     const limit = Number(req.query.limit) || 20;
-    const search = req.query.search?.trim() || "";
+    const search = req.query.search?.trim();
 
     const start = (page - 1) * limit;
-    const end = start + limit - 1;
+    const end = start + limit;
 
-    // Base query
-let query = supabase
+    // ======================================================
+    // 🔍 SEARCH MODE → USE RPC
+    // ======================================================
+    if (search) {
+      const { data, error } = await supabase.rpc("search_inventory", {
+        p_tenant: tenant_id,
+        p_search: search
+      });
+
+      if (error) throw error;
+
+      const totalRecords = data.length;
+      const paginated = data.slice(start, end);
+
+      return res.json({
+        success: true,
+        page,
+        limit,
+        search,
+        totalRecords,
+        totalPages: Math.ceil(totalRecords / limit),
+        data: paginated
+      });
+    }
+
+    // ======================================================
+    // 📦 NORMAL MODE → NO SEARCH
+    // ======================================================
+    const { data, count, error } = await supabase
   .from("inventory")
   .select(
     `
@@ -75,64 +102,21 @@ let query = supabase
       tax,
       barcode,
       sku,
-      categories!products_category_fk (
+      categories:categories!products_category_id_fkey (
         id,
         name
       )
     )
-  `,
+    `,
     { count: "exact" }
   )
   .eq("tenant_id", tenant_id)
   .order("updated_at", { ascending: false })
-  .range(start, end);
+  .range(start, end - 1);
 
-
-    // ==========================================
-    // 🔍 SEARCH LOGIC
-    // ==========================================
-    // Supabase cannot search nested columns directly in join,
-    // so we filter using RPC-style OR logic by referencing the foreign table.
-if (search) {
-  query = supabase
-    .from("inventory")
-    .select(
-      `
-      id,
-      quantity,
-      reorder_level,
-      updated_at,
-      product_id,
-      expiry_date,
-      max_stock,
-      products (
-        name,
-        category,
-        brand,
-        unit,
-        cost_price,
-        selling_price,
-        tax,
-        barcode,
-        sku
-      )
-    `,
-      { count: "exact" }
-    )
-    .eq("tenant_id", tenant_id)
-    .or(
-      `products.name.ilike.*${search}*,products.sku.ilike.*${search}*,products.barcode.ilike.*${search}*,products.brand.ilike.*${search}*,products.category.ilike.*${search}*`
-    )
-    .order("updated_at", { ascending: false })
-    .range(start, end);
-}
-
-
-    const { data, count, error } = await query;
     if (error) throw error;
 
-    // Flatten output
-    const formatted = data.map((item) => ({
+    const formatted = data.map(item => ({
       id: item.id,
       product_id: item.product_id,
       quantity: item.quantity,
@@ -140,25 +124,26 @@ if (search) {
       updatedAt: item.updated_at,
       expiryDate: item.expiry_date,
       maxStock: item.max_stock,
-
-      // Product table fields
       ...item.products,
+      category: item.products?.categories
     }));
 
     return res.json({
       success: true,
       page,
       limit,
-      search,
+      search: "",
       totalRecords: count || 0,
       totalPages: Math.ceil((count || 0) / limit),
-      data: formatted,
+      data: formatted
     });
+
   } catch (err) {
     console.error("getInventory error:", err);
     return res.status(500).json({ error: err.message || "Server error" });
   }
 };
+
 
 
 // Update inventory (only for items belonging to tenant)

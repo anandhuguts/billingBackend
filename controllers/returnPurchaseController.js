@@ -346,6 +346,11 @@ if (qty > remainingQty) {
       .maybeSingle();
 
     if (invErr) throw invErr;
+if (existingInv && Number(existingInv.quantity) < qty) {
+  return res.status(400).json({
+    error: "Insufficient inventory to process purchase return",
+  });
+}
 
     if (existingInv) {
       await supabase
@@ -379,6 +384,7 @@ if (qty > remainingQty) {
       },
     ]);
 
+
     /* ===========================
        5) ACCOUNTING
     =========================== */
@@ -400,65 +406,61 @@ await supabase.from("daybook").insert([
     tenant_id,
     entry_type: "purchase_return",
     description: desc,
-    debit: refundAmount,
-    credit: 0,
+    debit: refund_method === "cash" ? refundAmount : 0,
+    credit: refund_method === "credit_note" ? refundAmount : 0,
     reference_id: purchase_return_id,
   },
 ]);
+
 
 // ------------------------------
 // 5A — REFUND METHOD
 // ------------------------------
 
 // CASH refund → Supplier gives us money back
-if (refund_method === "cash") {
+// Decide where refund goes (Cash OR Accounts Payable)
+const settlementAccount =
+  refund_method === "cash"
+    ? coaId(coaMap, "cash")
+    : coaId(coaMap, "accounts payable");
+
+// Inventory reversal (goods going out)
+await addJournalEntry({
+  tenant_id,
+  debit_account: coaId(coaMap, "purchase returns"), // contra-expense
+  credit_account: coaId(coaMap, "inventory"),
+  amount: netAmount,
+  description: `${desc} - Inventory returned`,
+  reference_id: purchase_return_id,
+  reference_type: "purchase_return",
+});
+
+// VAT reversal (input VAT reduced)
+if (taxAmount > 0) {
   await addJournalEntry({
     tenant_id,
-    debit_account: coaId(coaMap, "cash"),
-    credit_account: coaId(coaMap, "inventory"),
-    amount: netAmount,
-    description: `${desc} - Inventory reversal`,
+    debit_account: coaId(coaMap, "purchase returns"),
+    credit_account: coaId(coaMap, "vat input"),
+    amount: taxAmount,
+    description: `${desc} - VAT input reversal`,
     reference_id: purchase_return_id,
     reference_type: "purchase_return",
   });
-
-  if (taxAmount > 0) {
-    await addJournalEntry({
-      tenant_id,
-      debit_account: coaId(coaMap, "cash"),
-      credit_account: coaId(coaMap, "vat input"),
-      amount: taxAmount,
-      description: `${desc} - VAT reversal`,
-      reference_id: purchase_return_id,
-      reference_type: "purchase_return",
-    });
-  }
 }
+// ------------------------------
+// 5B — Settlement (FINAL & REQUIRED)
+// ------------------------------
+await addJournalEntry({
+  tenant_id,
+  debit_account: settlementAccount, // Cash OR Accounts Payable
+  credit_account: coaId(coaMap, "purchase returns"),
+  amount: refundAmount,
+  description: `${desc} - Refund settlement`,
+  reference_id: purchase_return_id,
+  reference_type: "purchase_return",
+});
 
-// CREDIT NOTE → Payables reduced
-else {
-  await addJournalEntry({
-    tenant_id,
-    debit_account: coaId(coaMap, "accounts payable"),
-    credit_account: coaId(coaMap, "inventory"),
-    amount: netAmount,
-    description: `${desc} - Inventory reversal`,
-    reference_id: purchase_return_id,
-    reference_type: "purchase_return",
-  });
 
-  if (taxAmount > 0) {
-    await addJournalEntry({
-      tenant_id,
-      debit_account: coaId(coaMap, "accounts payable"),
-      credit_account: coaId(coaMap, "vat input"),
-      amount: taxAmount,
-      description: `${desc} - VAT reversal`,
-      reference_id: purchase_return_id,
-      reference_type: "purchase_return",
-    });
-  }
-}
 
 
 
