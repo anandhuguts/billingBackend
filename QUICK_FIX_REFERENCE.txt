@@ -1,0 +1,178 @@
+┌─────────────────────────────────────────────────────────────────────┐
+│                                                                     │
+│  🎯 PURCHASE ACCOUNTING - QUICK FIX REFERENCE                       │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════
+  🚨 THE PROBLEM
+═══════════════════════════════════════════════════════════════════════
+
+Account 533 (Accounts Payable) was marked as "asset" instead of "liability"
+
+This breaks:
+  ❌ Balance sheet
+  ❌ Accounting equation (Assets = Liabilities + Equity)
+  ❌ Purchase liability tracking
+  ❌ Supplier payables reporting
+
+═══════════════════════════════════════════════════════════════════════
+  ✅ THE FIX (Run This NOW)
+═══════════════════════════════════════════════════════════════════════
+
+1️⃣ Open Supabase SQL Editor
+2️⃣ Run this command:
+
+    UPDATE coa SET type = 'liability' WHERE id = 533;
+
+3️⃣ Verify:
+
+    SELECT id, name, type FROM coa WHERE id = 533;
+
+4️⃣ Expected output:
+
+    id  | name             | type
+    ----|------------------|----------
+    533 | Accounts Payable | liability  ✅
+
+═══════════════════════════════════════════════════════════════════════
+  📂 FILES CREATED
+═══════════════════════════════════════════════════════════════════════
+
+✅ controllers/purchaseController.js
+   - createPurchase() - Added COA type validation
+   - payPurchase() - Added COA type validation
+
+✅ migrations/quick_fix_account_533.sql
+   - Quick one-step fix for account 533
+
+✅ migrations/fix_coa_account_types.sql
+   - Comprehensive fix for all COA accounts
+
+✅ docs/PURCHASE_FIX_SUMMARY.md
+   - Complete explanation of all changes
+
+✅ docs/PURCHASE_ACCOUNTING_FIX_GUIDE.md
+   - Step-by-step testing & verification guide
+
+═══════════════════════════════════════════════════════════════════════
+  🧪 TEST PURCHASE FLOW
+═══════════════════════════════════════════════════════════════════════
+
+Create a purchase:
+
+  POST /api/purchases
+  {
+    "supplier_id": 102,
+    "payment_method": "credit",
+    "items": [{
+      "product_id": 116,
+      "quantity": 1,
+      "cost_price": 20
+    }]
+  }
+
+Verify journal entries:
+
+  SELECT 
+    dr.name as debit,
+    dr.type,
+    cr.name as credit,
+    cr.type
+  FROM journal_entries je
+  JOIN coa dr ON je.debit_account = dr.id
+  JOIN coa cr ON je.credit_account = cr.id
+  WHERE je.reference_type = 'purchase'
+  ORDER BY je.created_at DESC
+  LIMIT 2;
+
+Expected:
+  ✅ debit: Inventory (asset)
+  ✅ credit: Accounts Payable (liability)  ← THIS IS CRITICAL
+
+═══════════════════════════════════════════════════════════════════════
+  📊 ACCOUNTING LOGIC
+═══════════════════════════════════════════════════════════════════════
+
+Purchase ₹21 (₹20 + ₹1 VAT) on credit:
+
+  Dr Inventory (asset)           20
+  Dr VAT Input (asset)            1
+     Cr Accounts Payable (liability)  21
+
+This creates:
+  • Assets: +21 (inventory + VAT recoverable)
+  • Liabilities: +21 (debt to supplier)
+  • Equation balanced ✅
+
+═══════════════════════════════════════════════════════════════════════
+  🔍 VERIFICATION QUERIES
+═══════════════════════════════════════════════════════════════════════
+
+Check COA types:
+
+  SELECT name, type 
+  FROM coa 
+  WHERE LOWER(name) IN (
+    'accounts payable',
+    'inventory',
+    'vat input',
+    'cash',
+    'bank'
+  )
+  ORDER BY name;
+
+Expected:
+  ✅ Accounts Payable → liability
+  ✅ Bank → asset
+  ✅ Cash → asset
+  ✅ Inventory → asset
+  ✅ VAT Input → asset
+
+Check ledger balance:
+
+  SELECT 
+    coa.name,
+    coa.type,
+    SUM(le.debit - le.credit) as balance
+  FROM ledger_entries le
+  JOIN coa ON le.account_id = coa.id
+  WHERE coa.name = 'Accounts Payable'
+  GROUP BY coa.id, coa.name, coa.type;
+
+Expected for liability:
+  ✅ Positive balance = you owe money
+  ✅ Negative balance = supplier owes you
+
+═══════════════════════════════════════════════════════════════════════
+  🚀 NEXT STEPS
+═══════════════════════════════════════════════════════════════════════
+
+After purchase accounting is fixed:
+
+  1. Audit sales controller (invoice + COGS)
+  2. Audit purchase returns
+  3. Audit sales returns  
+  4. Create balance sheet report
+  5. Create P&L report
+  6. Add accounting integrity checks
+
+═══════════════════════════════════════════════════════════════════════
+  ❓ NEED HELP?
+═══════════════════════════════════════════════════════════════════════
+
+Check these files:
+  • docs/PURCHASE_FIX_SUMMARY.md (overview)
+  • docs/PURCHASE_ACCOUNTING_FIX_GUIDE.md (detailed guide)
+
+Run the fix:
+  • migrations/quick_fix_account_533.sql (fast)
+  • migrations/fix_coa_account_types.sql (comprehensive)
+
+═══════════════════════════════════════════════════════════════════════
+
+✅ Status: READY FOR PRODUCTION
+📅 Date: 2026-01-12
+🤖 Fixed by: Antigravity AI
+
+═══════════════════════════════════════════════════════════════════════

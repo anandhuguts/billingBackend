@@ -15,30 +15,30 @@ export async function createDefaultCoaForTenant(tenant_id) {
   }
 
   const defaultAccounts = [
-  // ASSETS
-  { name: "Cash", type: "asset" },
-  { name: "Bank", type: "asset" },
-  { name: "Inventory", type: "asset" },
-  { name: "Accounts Receivable", type: "asset" },
-  { name: "VAT Input", type: "asset" },
-  { name: "Employee Advance", type: "asset" },
+    // ASSETS
+    { name: "Cash", type: "asset" },
+    { name: "Bank", type: "asset" },
+    { name: "Inventory", type: "asset" },
+    { name: "Accounts Receivable", type: "asset" },
+    { name: "VAT Input", type: "asset" },
+    { name: "Employee Advance", type: "asset" },
 
-  // LIABILITIES
-  { name: "Accounts Payable", type: "liability" },
-  { name: "VAT Payable", type: "liability" },
-  { name: "VAT Output", type: "liability" },
+    // LIABILITIES
+    { name: "Accounts Payable", type: "liability" },
+    { name: "VAT Payable", type: "liability" },
+    { name: "VAT Output", type: "liability" },
 
-  // INCOME
-  { name: "Sales", type: "income" },
-  { name: "Sales Returns", type: "income" }, // ⭐ REQUIRED
+    // INCOME
+    { name: "Sales", type: "income" },
 
-  // EXPENSES
-  { name: "Cost of Goods Sold", type: "expense" },
-  { name: "COGS", type: "expense" }, // alias
-  { name: "Discount Expense", type: "expense" },
-  { name: "Salary Expense", type: "expense" },
-  { name: "Staff Discount Expense", type: "expense" },
-];
+    // EXPENSES
+    { name: "Cost of Goods Sold", type: "expense" },
+    { name: "Sales Returns", type: "expense" }, // Contra-revenue (reduces sales)
+    { name: "Purchase Returns", type: "expense" }, // Contra-COGS (reduces purchase costs)
+    { name: "Discount Expense", type: "expense" },
+    { name: "Salary Expense", type: "expense" },
+    { name: "Staff Discount Expense", type: "expense" },
+  ];
 
 
   const rows = defaultAccounts.map((acc) => ({

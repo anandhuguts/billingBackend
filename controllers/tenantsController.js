@@ -25,8 +25,8 @@ const calculateAMCInfo = (amc) => {
     status_message: isExpired
       ? `Expired ${Math.abs(daysRemaining)} days ago`
       : isExpiringSoon
-      ? `Expiring in ${daysRemaining} days`
-      : `${daysRemaining} days remaining`,
+        ? `Expiring in ${daysRemaining} days`
+        : `${daysRemaining} days remaining`,
   };
 };
 
@@ -51,16 +51,16 @@ export const getAllTenants = async (req, res) => {
     // ==========================================
     // 🔍 APPLY SEARCH
     // ==========================================
-if (search) {
-  query = supabase
-    .from("tenants")
-    .select("*", { count: "exact" })
-    .or(
-      `name.ilike.*${search}*,email.ilike.*${search}*,phone.ilike.*${search}*,id.eq.${search}`
-    )
-    .order("created_at", { ascending: false })
-    .range(start, end);
-}
+    if (search) {
+      query = supabase
+        .from("tenants")
+        .select("*", { count: "exact" })
+        .or(
+          `name.ilike.*${search}*,email.ilike.*${search}*,phone.ilike.*${search}*,id.eq.${search}`
+        )
+        .order("created_at", { ascending: false })
+        .range(start, end);
+    }
 
 
     const { data, error, count } = await query;
@@ -183,6 +183,25 @@ export const createTenant = async (req, res) => {
       await createDefaultCoaForTenant(createdTenant.id);
     } catch (coaErr) {
       console.error("DEFAULT COA CREATION FAILED:", coaErr);
+    }
+
+    // ✅ Create default employee discount rule for new tenant
+    try {
+      await supabase
+        .from("employee_discount_rules")
+        .insert([
+          {
+            tenant_id: createdTenant.id,
+            discount_percent: 5,        // 5% discount
+            max_discount_amount: 100,   // Max ₹100 per bill
+            monthly_limit: 10,          // Can use 10 TIMES per month (count-based)
+            is_active: true,
+          },
+        ]);
+      console.log("Default employee discount rule created for tenant:", createdTenant.id);
+    } catch (discountErr) {
+      console.error("DEFAULT EMPLOYEE DISCOUNT RULE CREATION FAILED:", discountErr);
+      // Don't fail tenant creation if this fails
     }
 
     // ================================================
@@ -413,30 +432,30 @@ export const getTenantDetails = async (req, res) => {
     tenant,
     amc: amcRow
       ? {
-          amc_id: amcRow.id,
-          amc_number: amcRow.amc_number ?? null,
-          amc_status: computeAmcStatus(amcRow.start_date, amcRow.end_date),
-          billing_frequency: amcRow.billing_frequency ?? null,
-          billing_frequency_label: freqLabel(amcRow.billing_frequency),
-          currency,
-          amount: amcRow.amount ?? null,
-          amount_display: formatCurrency(amcRow.amount, currency),
-          start_date: amcRow.start_date ?? null,
-          start_date_display: formatDateDisplay(amcRow.start_date),
-          end_date: amcRow.end_date ?? null,
-          end_date_display: formatDateDisplay(amcRow.end_date),
-        }
+        amc_id: amcRow.id,
+        amc_number: amcRow.amc_number ?? null,
+        amc_status: computeAmcStatus(amcRow.start_date, amcRow.end_date),
+        billing_frequency: amcRow.billing_frequency ?? null,
+        billing_frequency_label: freqLabel(amcRow.billing_frequency),
+        currency,
+        amount: amcRow.amount ?? null,
+        amount_display: formatCurrency(amcRow.amount, currency),
+        start_date: amcRow.start_date ?? null,
+        start_date_display: formatDateDisplay(amcRow.start_date),
+        end_date: amcRow.end_date ?? null,
+        end_date_display: formatDateDisplay(amcRow.end_date),
+      }
       : null,
     latest_payment: paymentRow
       ? {
-          id: paymentRow.id,
-          payment_date: paymentRow.payment_date ?? null,
-          payment_date_display: formatDateDisplay(paymentRow.payment_date),
-          amount: paymentRow.amount ?? null,
-          amount_display: formatCurrency(paymentRow.amount, currency),
-          plan: paymentRow.plan ?? null,
-          status: paymentRow.status ?? null,
-        }
+        id: paymentRow.id,
+        payment_date: paymentRow.payment_date ?? null,
+        payment_date_display: formatDateDisplay(paymentRow.payment_date),
+        amount: paymentRow.amount ?? null,
+        amount_display: formatCurrency(paymentRow.amount, currency),
+        plan: paymentRow.plan ?? null,
+        status: paymentRow.status ?? null,
+      }
       : null,
   };
 

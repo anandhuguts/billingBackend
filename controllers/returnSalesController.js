@@ -106,7 +106,7 @@ export const getAllSalesReturns = async (req, res) => {
     // Base query
     let q = supabase
       .from("sales_returns")
-    .select(`
+      .select(`
   *,
   invoices(invoice_number),
   customers(name),
@@ -377,31 +377,17 @@ export const createSalesReturn = async (req, res) => {
         cost_total: lineCost,
       });
 
-      // 6a) Inventory update
-      const { data: existingInv } = await supabase
-        .from("inventory")
-        .select("id, quantity")
-        .eq("tenant_id", tenant_id)
-        .eq("product_id", product_id)
-        .maybeSingle();
+      // 6a) ✅ ATOMIC Inventory update (concurrent-safe)
+      const { error: invError } = await supabase.rpc('increment_inventory', {
+        p_tenant_id: tenant_id,
+        p_product_id: product_id,
+        p_quantity: qty,
+        p_cost_value: lineCost
+      });
 
-      if (existingInv) {
-        await supabase
-          .from("inventory")
-          .update({
-            quantity: Number(existingInv.quantity || 0) + qty,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", existingInv.id);
-      } else {
-        await supabase.from("inventory").insert([
-          {
-            tenant_id,
-            product_id,
-            quantity: qty,
-            updated_at: new Date().toISOString(),
-          },
-        ]);
+      if (invError) {
+        console.error(`Inventory increment failed for product ${product_id}:`, invError);
+        throw new Error(`Inventory update failed: ${invError.message}`);
       }
 
       // 6b) Stock movement
@@ -440,11 +426,48 @@ export const createSalesReturn = async (req, res) => {
       .update({ total_refund: refundAmount })
       .eq("id", sales_return_id);
 
+    // 8a) ✅ Reverse customer stats if customer exists
+    if (customer_id) {
+      const { error: statsError } = await supabase.rpc('decrement_customer_stats', {
+        p_customer_id: customer_id,
+        p_tenant_id: tenant_id,
+        p_amount: refundAmount
+      });
+
+      if (statsError) {
+        console.error("⚠️ Customer stats reversal failed:", statsError);
+      }
+    }
+
+    // 8b) ✅ Reverse loyalty points if customer exists
+    if (customer_id) {
+      // Calculate points that were earned from original sale
+      const pointsEarned = Math.floor(totalGrossRounded / 100);
+
+      if (pointsEarned > 0) {
+        const { data: newBalance } = await supabase.rpc('reverse_loyalty_points', {
+          p_customer_id: customer_id,
+          p_tenant_id: tenant_id,
+          p_points_to_deduct: pointsEarned
+        });
+
+        // Log the reversal
+        await supabase.from("loyalty_transactions").insert([{
+          tenant_id,
+          customer_id,
+          invoice_id: null,
+          transaction_type: "adjustment",
+          points: -pointsEarned,
+          balance_after: newBalance || 0,
+          description: `Points reversed for return #${sales_return_id}`
+        }]);
+      }
+    }
+
     // 9) Accounting: ledger + journal + daybook
     const coaMap = await getCoaMap(tenant_id);
-    const desc = `Sales Return #${sales_return_id} (Invoice #${
-      invoice.invoice_number || invoice_id
-    })`;
+    const desc = `Sales Return #${sales_return_id} (Invoice #${invoice.invoice_number || invoice_id
+      })`;
 
     // Daybook – money going OUT (refund / credit) → credit
     await supabase.from("daybook").insert([
@@ -459,138 +482,78 @@ export const createSalesReturn = async (req, res) => {
     ]);
 
     // 9a) Reverse revenue and VAT (same for cash or credit_note)
-    
+
     // Journal entries
-  // 9) ACCOUNTING (NEW SYSTEM USING addJournalEntry ONLY)
+    // 9) ACCOUNTING (NEW SYSTEM USING addJournalEntry ONLY)
 
 
-// 9A — Refund (cash or credit note)
-// if (refund_type === "cash") {
-//   await addJournalEntry({
-//     tenant_id,
-//     debit_account: coaId(coaMap, "sales returns"),   // or "sales"
-//     credit_account: coaId(coaMap, "cash"),
-//     amount: refundAmount,
-//     description: `${desc} - Refund to customer`,
-//     reference_id: sales_return_id,
-//     reference_type: "sales_return",
-//   });
-// } else {
-//   await addJournalEntry({
-//     tenant_id,
-//     debit_account: coaId(coaMap, "sales returns"),   // or "sales"
-//     credit_account: coaId(coaMap, "accounts receivable"),
-//     amount: refundAmount,
-//     description: `${desc} - Credit note issued`,
-//     reference_id: sales_return_id,
-//     reference_type: "sales_return",
-//   });
-// }
-// Decide where refund is settled (ONE place only)
-const settlementAccount =
-  refund_type === "cash"
-    ? coaId(coaMap, "cash")
-    : coaId(coaMap, "accounts receivable");
+    // 9A — Refund (cash or credit note)
+    // if (refund_type === "cash") {
+    //   await addJournalEntry({
+    //     tenant_id,
+    //     debit_account: coaId(coaMap, "sales returns"),   // or "sales"
+    //     credit_account: coaId(coaMap, "cash"),
+    //     amount: refundAmount,
+    //     description: `${desc} - Refund to customer`,
+    //     reference_id: sales_return_id,
+    //     reference_type: "sales_return",
+    //   });
+    // } else {
+    //   await addJournalEntry({
+    //     tenant_id,
+    //     debit_account: coaId(coaMap, "sales returns"),   // or "sales"
+    //     credit_account: coaId(coaMap, "accounts receivable"),
+    //     amount: refundAmount,
+    //     description: `${desc} - Credit note issued`,
+    //     reference_id: sales_return_id,
+    //     reference_type: "sales_return",
+    //   });
+    // }
+    // Decide where refund is settled (ONE place only)
+    const settlementAccount =
+      refund_type === "cash"
+        ? coaId(coaMap, "cash")
+        : coaId(coaMap, "accounts receivable");
 
-// A) Reverse sales revenue (no cash here)
-await addJournalEntry({
-  tenant_id,
-  debit_account: coaId(coaMap, "sales returns"), // contra revenue
-  credit_account: coaId(coaMap, "sales"),
-  amount: totalNetRounded,
-  description: `${desc} - Reverse sales revenue`,
-  reference_id: sales_return_id,
-  reference_type: "sales_return",
-});
+    // ✅ CORRECT: Single entry for revenue + VAT reversal
+    // Dr Sales Returns (contra revenue)
+    //    Cr Cash/AR (refund payment)
+    await addJournalEntry({
+      tenant_id,
+      debit_account: coaId(coaMap, "sales returns"),
+      credit_account: settlementAccount,
+      amount: totalGrossRounded,  // Full amount including VAT
+      description: `${desc} - Customer refund`,
+      reference_id: sales_return_id,
+      reference_type: "sales_return",
+    });
 
-// B) Reverse VAT output (cash touched here ONCE)
+    // 9B — Reverse COGS & Increase Inventory
+    if (totalCostRounded > 0) {
+      await addJournalEntry({
+        tenant_id,
+        debit_account: coaId(coaMap, "inventory"),
+        credit_account: coaId(coaMap, "cost of goods sold"),  // ✅ Fixed: use full name
+        amount: totalCostRounded,
+        description: `${desc} - Reverse COGS & increase inventory`,
+        reference_id: sales_return_id,
+        reference_type: "sales_return",
+      });
+    }
 
-// B) Reverse VAT output (NO extra cash logic)
-if (totalVatRounded > 0) {
-  await addJournalEntry({
-    tenant_id,
-    debit_account: coaId(coaMap, "vat output"),
-    credit_account: settlementAccount,
-    amount: totalVatRounded,
-    description: `${desc} - Reverse VAT output`,
-    reference_id: sales_return_id,
-    reference_type: "sales_return",
-  });
-}
-
-// C) Refund / credit customer (cash touched here ONCE)
-await addJournalEntry({
-  tenant_id,
-  debit_account: coaId(coaMap, "sales returns"),
-  credit_account: settlementAccount,
-  amount: totalNetRounded,
-  description: `${desc} - Customer refund / credit`,
-  reference_id: sales_return_id,
-  reference_type: "sales_return",
-});
-
-// 9B — Reverse Sales Revenue
-
-
-// 9C — Reverse VAT Output
-
-
-// 9D — Reverse COGS & Increase Inventory
-if (totalCostRounded > 0) {
-  await addJournalEntry({
-    tenant_id,
-    debit_account: coaId(coaMap, "inventory"),
-    credit_account: coaId(coaMap, "cogs"),
-    amount: totalCostRounded,
-    description: `${desc} - Reverse COGS & increase inventory`,
-    reference_id: sales_return_id,
-    reference_type: "sales_return",
-  });
-}
-
-    // 10) VAT report update
+    // 10) ✅ ATOMIC VAT report update
     const now = new Date();
-    const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
-      2,
-      "0"
-    )}`;
+    const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const { data: vatRow } = await supabase
-      .from("vat_reports")
-      .select("*")
-      .eq("tenant_id", tenant_id)
-      .eq("period", period)
-      .maybeSingle();
+    const { error: vatError } = await supabase.rpc('increment_vat_report', {
+      p_tenant_id: tenant_id,
+      p_period: period,
+      p_sales: -totalNetRounded,  // Negative to decrease
+      p_vat: -totalVatRounded
+    });
 
-    const prevTotalSales = Number(vatRow?.total_sales || 0);
-    const prevSalesVat = Number(vatRow?.sales_vat || 0);
-    const prevPurchaseVat = Number(vatRow?.purchase_vat || 0);
-
-    const newSales = prevTotalSales - totalNetRounded;
-    const newSalesVat = prevSalesVat - totalVatRounded;
-    const newVatPayable = newSalesVat - prevPurchaseVat;
-
-    if (vatRow) {
-      await supabase
-        .from("vat_reports")
-        .update({
-          total_sales: newSales,
-          sales_vat: newSalesVat,
-          vat_payable: newVatPayable,
-        })
-        .eq("id", vatRow.id);
-    } else {
-      await supabase.from("vat_reports").insert([
-        {
-          tenant_id,
-          period,
-          total_sales: -totalNetRounded,
-          sales_vat: -totalVatRounded,
-          total_purchases: 0,
-          purchase_vat: 0,
-          vat_payable: -totalVatRounded,
-        },
-      ]);
+    if (vatError) {
+      console.error("⚠️ VAT report update failed (non-critical):", vatError);
     }
 
     // 11) RESPONSE
@@ -658,28 +621,9 @@ export const updateSalesReturn = async (req, res) => {
 ========================================================= */
 
 export const deleteSalesReturn = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    let q = supabase.from("sales_returns").delete().eq("id", id);
-
-    if (req.user.role !== "super_admin") {
-      q = q.eq("tenant_id", req.user.tenant_id);
-    }
-
-    const { data, error } = await q.select();
-
-    if (error) return res.status(500).json({ error: error.message });
-
-    if (!data?.length) {
-      return res
-        .status(404)
-        .json({ error: "Sales return not found or forbidden" });
-    }
-
-    res.json({ message: "Deleted", sales_return: data[0] });
-  } catch (err) {
-    console.error("deleteSalesReturn error", err);
-    res.status(500).json({ error: "Internal server error" });
-  }
+  return res.status(403).json({
+    error: "Sales Return deletion is disabled",
+    message: "Deleting returns would create accounting inconsistencies. " +
+      "Returns are permanent records. Contact support if you need to void a return."
+  });
 };

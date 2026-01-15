@@ -10,12 +10,21 @@ import { generatePDF } from "../scripts/pdfGenerator.js";
 
 /**
  * ============================================================
- * HELPER: GET ACCOUNT ID BY NAME FROM COA ARRAY
+ * HELPER: GET ACCOUNT ID BY NAME FROM COA ARRAY WITH TYPE VALIDATION
  * ============================================================
  */
-function getAccountId(name, coaAccounts) {
+function getAccountId(name, coaAccounts, expectedType = null) {
   const acc = coaAccounts.find(a => a.name.toLowerCase() === name.toLowerCase());
   if (!acc) throw new Error(`COA account not found: ${name}`);
+
+  // ⚠️ VALIDATE ACCOUNT TYPE (CRITICAL FOR ACCOUNTING INTEGRITY)
+  if (expectedType && acc.type !== expectedType) {
+    throw new Error(
+      `❌ ACCOUNTING ERROR: "${name}" should be "${expectedType}" ` +
+      `but found as "${acc.type}". Please fix COA table.`
+    );
+  }
+
   return acc.id;
 }
 export async function recordCustomerPaymentAccounting({
@@ -93,29 +102,49 @@ async function processDeferredOperations(params) {
 
     /**
      * ======================================================
-     * 1) LOYALTY — UPDATE CUSTOMER AFTER REDEEM + EARN
+     * 1) LOYALTY — UPDATE CUSTOMER (ATOMIC - CONCURRENT SAFE)
      * ======================================================
      */
     if (isLoyaltyCustomer) {
-      await supabase
-        .from("customers")
-        .update({
-          loyalty_points: currentPoints,
-          lifetime_points: lifetimePoints,
-          last_purchase_at: new Date(),
-          total_purchases: (customer.total_purchases || 0) + 1,
-          total_spent: Number(customer.total_spent || 0) + gross_amount,
-        })
-        .eq("id", customer_id)
-        .eq("tenant_id", tenant_id);
+      // ✅ ATOMIC: Update loyalty points using RPC (concurrent-safe)
+      const { data: loyaltyResult, error: loyaltyError } = await supabase
+        .rpc('update_loyalty_points', {
+          p_customer_id: customer_id,
+          p_tenant_id: tenant_id,
+          p_redeem: redeem_points,
+          p_earn: earn_points
+        });
 
+      if (loyaltyError) {
+        console.error("❌ Loyalty points update failed:", loyaltyError);
+        // Don't throw - loyalty is non-critical
+      }
+
+      // ✅ ATOMIC: Update customer stats using RPC (concurrent-safe)
+      const { error: statsError } = await supabase
+        .rpc('increment_customer_stats', {
+          p_customer_id: customer_id,
+          p_tenant_id: tenant_id,
+          p_amount: gross_amount
+        });
+
+      if (statsError) {
+        console.error("❌ Customer stats update failed:", statsError);
+        // Don't throw - stats are non-critical
+      }
+
+      // Record earn transaction (if points were earned)
       if (earn_points > 0) {
+        const actualBalance = loyaltyResult && loyaltyResult[0]
+          ? loyaltyResult[0].new_balance
+          : currentPoints;
+
         await supabase.from("loyalty_transactions").insert([{
           customer_id,
           invoice_id: invoice.id,
           transaction_type: "earn",
           points: earn_points,
-          balance_after: currentPoints,
+          balance_after: actualBalance,
           description: `Earned ${earn_points} points`,
         }]);
       }
@@ -127,107 +156,115 @@ async function processDeferredOperations(params) {
      * ======================================================
      */
 
-const grossSales = Number(gross_amount);
+    const grossSales = Number(gross_amount);
 
 
-// derive effective tax rate from items (safe for mixed tax)
-const totalTax = Number(
-  invoiceItemsToInsert.reduce(
-    (sum, it) => sum + Number(it.tax_amount || 0),
-    0
-  ).toFixed(2)
-);
+    // derive effective tax rate from items (safe for mixed tax)
+    const totalTax = Number(
+      invoiceItemsToInsert.reduce(
+        (sum, it) => sum + Number(it.tax_amount || 0),
+        0
+      ).toFixed(2)
+    );
 
 
 
 
-const netSales = Math.max(
-  0,
-  Number((grossSales - totalTax).toFixed(2))
-);
+    const netSales = Math.max(
+      0,
+      Number((grossSales - totalTax).toFixed(2))
+    );
 
 
     const saleDescription = `Invoice #${invoice.invoice_number || invoice.id}`;
 
-    // COA IDs mapped using your actual COA:
-   const paymentAcc = getPaymentAccountId(payment_method, coaAccounts);
-const arAcc = getAccountId("Accounts Receivable", coaAccounts);
+    // COA IDs mapped using your actual COA WITH TYPE VALIDATION:
+    const paymentAcc = getPaymentAccountId(payment_method, coaAccounts);
+    const arAcc = getAccountId("Accounts Receivable", coaAccounts, "asset");
 
-    const salesAcc = getAccountId("Sales", coaAccounts);
-    const vatOutputAcc = getAccountId("VAT Output", coaAccounts);
-    const discountAcc = getAccountId("Discount Expense", coaAccounts);
-    const staffDiscountAcc = getAccountId("Staff Discount Expense", coaAccounts);
-    const cogsAcc = getAccountId("Cost of Goods Sold", coaAccounts);
-    const inventoryAcc = getAccountId("Inventory", coaAccounts);
+    const salesAcc = getAccountId("Sales", coaAccounts, "income");
+
+    // ✅ Try VAT Payable first, fallback to VAT Output
+    let vatOutputAcc;
+    try {
+      vatOutputAcc = getAccountId("VAT Payable", coaAccounts, "liability");
+    } catch (e) {
+      vatOutputAcc = getAccountId("VAT Output", coaAccounts, "liability");
+    }
+
+    const discountAcc = getAccountId("Discount Expense", coaAccounts, "expense");
+    const staffDiscountAcc = getAccountId("Staff Discount Expense", coaAccounts, "expense");
+    const cogsAcc = getAccountId("Cost of Goods Sold", coaAccounts, "expense");
+    const inventoryAcc = getAccountId("Inventory", coaAccounts, "asset");
 
     /**
      * 2.1) DAYBOOK ENTRY
      */
-/**
- * 2.1) DAYBOOK ENTRY — ONLY FOR NON-CREDIT SALES
- */
-if (payment_method !== "credit") {
-  await supabase.from("daybook").insert([{
-    tenant_id,
-    entry_type: "sale",
-    description: saleDescription,
-    debit: 0,
-    credit: grossSales,
-    reference_id: invoice.id,
-  }]);
-}
+    /**
+     * 2.1) DAYBOOK ENTRY — ONLY FOR NON-CREDIT SALES
+     */
+    if (payment_method !== "credit") {
+      await supabase.from("daybook").insert([{
+        tenant_id,
+        entry_type: "sale",
+        description: saleDescription,
+        debit: 0,
+        credit: grossSales,
+        reference_id: invoice.id,
+      }]);
+    }
 
     /**
      * 2.2) JOURNAL ENTRIES
      */
     if (payment_method !== "credit") {
-await addJournalEntry({
-  tenant_id,
-  debit_account: paymentAcc,
-  credit_account: salesAcc,
-  amount: netSales,
-  description: saleDescription,
-  reference_id: invoice.id,
-  reference_type: "invoice_sale", // ✅ ADD THIS
-});;
+      await addJournalEntry({
+        tenant_id,
+        debit_account: paymentAcc,
+        credit_account: salesAcc,
+        amount: netSales,
+        description: saleDescription,
+        reference_id: invoice.id,
+        reference_type: "invoice_sale", // ✅ ADD THIS
+      });;
 
-  if (totalTax > 0) {
-await addJournalEntry({
-  tenant_id,
-  debit_account: paymentAcc,
-  credit_account: vatOutputAcc,
-  amount: totalTax,
-  description: `VAT Output for ${saleDescription}`,
-  reference_id: invoice.id,
-  reference_type: "invoice_vat", // ✅ ADD THIS
-});
+      if (totalTax > 0) {
+        await addJournalEntry({
+          tenant_id,
+          debit_account: paymentAcc,
+          credit_account: vatOutputAcc,
+          amount: totalTax,
+          description: `VAT Output for ${saleDescription}`,
+          reference_id: invoice.id,
+          reference_type: "invoice_vat", // ✅ ADD THIS
+        });
 
-  }
-}
- else {
+      }
+    }
+    else {
       // CREDIT SALE
-await addJournalEntry({
-  tenant_id,
-  debit_account: arAcc,
-  credit_account: salesAcc,
-  amount: netSales,
-  description: saleDescription,
-  reference_id: invoice.id,
-  reference_type: "invoice_sale", // ✅ ADD THIS
-});
+      await addJournalEntry({
+        tenant_id,
+        debit_account: arAcc,
+        credit_account: salesAcc,
+        amount: netSales,
+        description: saleDescription,
+        reference_id: invoice.id,
+        reference_type: "invoice_sale", // ✅ ADD THIS
+      });
 
 
- if (totalTax > 0) {
-  await addJournalEntry({
-    tenant_id,
-    debit_account: arAcc,
-    credit_account: vatOutputAcc,
-    amount: totalTax,
-    description: `VAT Output for ${saleDescription}`,
-    reference_id: invoice.id,
-    reference_type: "invoice_vat", // ✅ REQUIRED
-  });
-}
+      if (totalTax > 0) {
+        await addJournalEntry({
+          tenant_id,
+          debit_account: arAcc,
+          credit_account: vatOutputAcc,
+          amount: totalTax,
+          description: `VAT Output for ${saleDescription}`,
+          reference_id: invoice.id,
+          reference_type: "invoice_vat", // ✅ REQUIRED
+        });
+      }
     }
 
     /**
@@ -271,83 +308,69 @@ await addJournalEntry({
      * 3) COGS + INVENTORY ACCOUNTING
      * ======================================================
      */
-for (const it of invoiceItemsToInsert) {
-  const { data: prod } = await supabase
-    .from("products")
-    .select("cost_price")
-    .eq("id", it.product_id)
-    .maybeSingle();
+    for (const it of invoiceItemsToInsert) {
+      const { data: prod } = await supabase
+        .from("products")
+        .select("cost_price")
+        .eq("id", it.product_id)
+        .maybeSingle();
 
-  if (!prod || !prod.cost_price) continue;
+      if (!prod || !prod.cost_price) continue;
 
-  const lineCost = Number(prod.cost_price) * Number(it.quantity);
+      const lineCost = Number(prod.cost_price) * Number(it.quantity);
 
-  await addJournalEntry({
-    tenant_id,
-    debit_account: cogsAcc,
-    credit_account: inventoryAcc,
-    amount: lineCost,
-    description: `COGS for invoice #${invoice.id}`,
-    reference_id: invoice.id,
-    reference_type: "invoice_cogs",
-  });
-}
+      await addJournalEntry({
+        tenant_id,
+        debit_account: cogsAcc,
+        credit_account: inventoryAcc,
+        amount: lineCost,
+        description: `COGS for invoice #${invoice.id}`,
+        reference_id: invoice.id,
+        reference_type: "invoice_cogs",
+      });
+
+      // ✅ CRITICAL FIX: Update inventory stock_value
+      const { data: invData } = await supabase
+        .from("inventory")
+        .select("id, stock_value")
+        .eq("tenant_id", tenant_id)
+        .eq("product_id", it.product_id)
+        .maybeSingle();
+
+      if (invData) {
+        const currentStockValue = Number(invData.stock_value || 0);
+        const newStockValue = Math.max(0, currentStockValue - lineCost);
+
+        await supabase
+          .from("inventory")
+          .update({ stock_value: newStockValue })
+          .eq("id", invData.id);
+      }
+    }
 
 
     /**
      * ======================================================
-     * 4) VAT REPORT UPDATE (MONTHLY)
+     * 4) VAT REPORT UPDATE (ATOMIC - FIXED)
      * ======================================================
      */
-   // ======================================================
-// 4) VAT REPORT UPDATE (MONTHLY) — SAFE UPSERT
-// ======================================================
+    const now = new Date(invoice.created_at || new Date());
+    const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
+    // FIXED: Use atomic RPC to prevent race conditions
+    const { error: vatError } = await supabase
+      .rpc('increment_vat_report', {
+        p_tenant_id: tenant_id,
+        p_period: period,
+        p_sales: netSales,
+        p_vat: totalTax
+      });
 
+    if (vatError) {
+      console.error("⚠️ VAT report update failed (non-critical):", vatError);
+      // Don't fail the invoice for VAT report issues
+    }
 
-const now = new Date(invoice.created_at || new Date());
-const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-
-// 1️⃣ Ensure row exists (atomic)
-await supabase
-  .from("vat_reports")
-  .upsert(
-    [{
-      tenant_id,
-      period,
-      total_sales: 0,
-      sales_vat: 0,
-      total_purchases: 0,
-      purchase_vat: 0,
-      vat_payable: 0,
-    }],
-    { onConflict: "tenant_id,period" }
-  );
-
-// 2️⃣ Increment totals safely
-const { data: vatRow, error: vatFetchErr } = await supabase
-  .from("vat_reports")
-  .select("id, total_sales, sales_vat, purchase_vat")
-  .eq("tenant_id", tenant_id)
-  .eq("period", period)
-  .single();
-
-if (vatFetchErr) throw vatFetchErr;
-
-const updatedSales = Number(vatRow.total_sales || 0) + netSales;
-const updatedVat = Number(vatRow.sales_vat || 0) + totalTax;
-const vatPayable = updatedVat - Number(vatRow.purchase_vat || 0);
-
-await supabase
-  .from("vat_reports")
-  .update({
-    total_sales: updatedSales,
-    sales_vat: updatedVat,
-    vat_payable: vatPayable,
-  })
-  .eq("id", vatRow.id);
-
-    
 
     console.log(`✅ Deferred operations completed for invoice ${invoice.id}`);
 
@@ -383,6 +406,15 @@ export const createInvoice = async (req, res) => {
       return res.status(400).json({ error: "No items provided" });
     }
 
+    // ✅ BUSINESS RULE: Coupons require customer registration
+    if (coupon_code && !customer_id) {
+      return res.status(400).json({
+        error: "Coupon code requires customer registration",
+        message: "Please provide customer details to use a coupon",
+        coupon_code: coupon_code
+      });
+    }
+
     // -----------------------------
     // STEP 1: FETCH PRODUCTS + COA + CUSTOMER (parallel)
     // -----------------------------
@@ -396,13 +428,13 @@ export const createInvoice = async (req, res) => {
       supabase.from("products").select("id, selling_price, tax, cost_price").in("id", productIds),
       customer_id
         ? supabase
-            .from("customers")
-            .select("id, loyalty_points, lifetime_points, total_purchases, total_spent, membership_tier")
-            .eq("id", customer_id)
-            .eq("tenant_id", tenant_id)
-            .single()
+          .from("customers")
+          .select("id, loyalty_points, lifetime_points, total_purchases, total_spent, membership_tier")
+          .eq("id", customer_id)
+          .eq("tenant_id", tenant_id)
+          .single()
         : { data: null, error: null },
-      supabase.from("coa").select("id, name").eq("tenant_id", tenant_id),
+      supabase.from("coa").select("id, name, type").eq("tenant_id", tenant_id),
     ]);
 
     const { data: productData, error: prodErr } = productDataResult;
@@ -468,25 +500,25 @@ export const createInvoice = async (req, res) => {
     } = discountResult;
 
     // employee discount
-const { discount: employee_discount_total } =
-  await calculateEmployeeDiscount({
-    tenant_id,
-    buyer_employee_id: req.body.employee_id || null,
-    subtotal: total_before_redeem, // ✅ SAME AS PREVIEW
-  });
+    const { discount: employee_discount_total, usageRecordId: employeeDiscountUsageId } =
+      await calculateEmployeeDiscount({
+        tenant_id,
+        buyer_employee_id: req.body.employee_id || null,
+        subtotal: total_before_redeem, // ✅ SAME AS PREVIEW
+      });
 
 
 
 
 
-const gross_amount_before_redeem = Number(
-  (total_before_redeem - employee_discount_total).toFixed(2)
-);
+    const gross_amount_before_redeem = Number(
+      (total_before_redeem - employee_discount_total).toFixed(2)
+    );
 
-let gross_amount = gross_amount_before_redeem;
+    let gross_amount = gross_amount_before_redeem;
 
 
-let net_amount = 0; // ✅ will be finalized after invoice items
+    let net_amount = 0; // ✅ will be finalized after invoice items
 
 
 
@@ -519,12 +551,12 @@ let net_amount = 0; // ✅ will be finalized after invoice items
       }
 
 
-// reduce gross
-gross_amount = Number(
-  (gross_amount_before_redeem - redeem_points).toFixed(2)
-);
+      // reduce gross
+      gross_amount = Number(
+        (gross_amount_before_redeem - redeem_points).toFixed(2)
+      );
 
-// 🔁 recompute tax AFTER redeem (do NOT scale net)
+      // 🔁 recompute tax AFTER redeem (do NOT scale net)
 
 
 
@@ -543,46 +575,39 @@ gross_amount = Number(
     if (gross_amount < 0) gross_amount = 0;
 
     // -----------------------------
-    // STEP 5: GENERATE INVOICE NUMBER (atomic-ish)
+    // STEP 5: GENERATE INVOICE NUMBER (ATOMIC - FIXED)
     // -----------------------------
-    const { data: counter } = await supabase
-      .from("tenant_counters")
-      .select("sales_seq")
-      .eq("tenant_id", tenant_id)
-      .maybeSingle();
+    // FIXED: Use atomic RPC to prevent race conditions and duplicate invoice numbers
+    const { data: seq, error: seqError } = await supabase
+      .rpc('get_next_sales_seq', { p_tenant_id: tenant_id });
 
-    let seq = 1;
-    if (!counter) {
-      await supabase.from("tenant_counters").insert([{ tenant_id, sales_seq: 1 }]);
-    } else {
-      seq = counter.sales_seq + 1;
-      await supabase
-        .from("tenant_counters")
-        .update({ sales_seq: seq })
-        .eq("tenant_id", tenant_id);
+    if (seqError) {
+      console.error("Invoice sequence generation failed:", seqError);
+      return res.status(500).json({ error: "Failed to generate invoice number" });
     }
 
     const year = new Date().getFullYear();
     const invoice_number = `INV-${year}-${String(seq).padStart(4, "0")}`;
 
+
     // -----------------------------
     // STEP 6: INSERT INVOICE
     // -----------------------------
- const insertPayload = {
-  tenant_id,
-  invoice_number,
-  handled_by: req.user.id,
-  customer_id: isLoyaltyCustomer ? customer_id : null,
+    const insertPayload = {
+      tenant_id,
+      invoice_number,
+      handled_by: req.user.id,
+      customer_id: isLoyaltyCustomer ? customer_id : null,
 
-total_amount: 0, // temp, will update after invoice_items,   // ✅ NET
-final_amount: gross_amount,// ✅ GROSS
-  payment_method,
-  item_discount_total,
-  bill_discount_total,
-  coupon_discount_total,
-  membership_discount_total,
-  employee_discount_total,
-};
+      total_amount: 0, // temp, will update after invoice_items,   // ✅ NET
+      final_amount: gross_amount,// ✅ GROSS
+      payment_method,
+      item_discount_total,
+      bill_discount_total,
+      coupon_discount_total,
+      membership_discount_total,
+      employee_discount_total,
+    };
 
 
     const { data: invoice, error: invoiceErr } = await supabase
@@ -616,13 +641,13 @@ final_amount: gross_amount,// ✅ GROSS
       );
     }
 
-    if (employee_discount_total > 0) {
+    // ✅ FIXED: Update specific employee discount record by ID
+    if (employee_discount_total > 0 && employeeDiscountUsageId) {
       relatedUpdates.push(
         supabase
           .from("employee_discount_usage")
           .update({ invoice_id: invoice.id })
-          .eq("employee_id", req.body.employee_id)
-          .is("invoice_id", null)
+          .eq("id", employeeDiscountUsageId)  // ✅ Update THIS specific record only
       );
     }
 
@@ -635,88 +660,88 @@ final_amount: gross_amount,// ✅ GROSS
       const qty = Number(it.qty || 0);
       const price = Number(it.price || 0);
       const discountPerUnit = Number(it.discount_amount || 0);
-const grossUnitBeforeAllDiscounts = price - discountPerUnit;
+      const grossUnitBeforeAllDiscounts = price - discountPerUnit;
 
-// 🔹 BASE BEFORE COUPON / REDEEM
-const grossBase =
-  gross_amount_before_redeem > 0
-    ? gross_amount_before_redeem
-    : 1;
+      // 🔹 BASE BEFORE COUPON / REDEEM
+      const grossBase =
+        gross_amount_before_redeem > 0
+          ? gross_amount_before_redeem
+          : 1;
 
-// 🔹 FINAL GROSS AFTER COUPON + REDEEM
-const grossFinal =
-  gross_amount > 0
-    ? gross_amount
-    : 0;
+      // 🔹 FINAL GROSS AFTER COUPON + REDEEM
+      const grossFinal =
+        gross_amount > 0
+          ? gross_amount
+          : 0;
 
-// 🔹 SCALE FACTOR (this applies coupon correctly)
-const priceScaleRatio = grossFinal / grossBase;
+      // 🔹 SCALE FACTOR (this applies coupon correctly)
+      const priceScaleRatio = grossFinal / grossBase;
 
-// ✅ FINAL GROSS UNIT (tax-inclusive)
-const grossUnit = Number(
-  (grossUnitBeforeAllDiscounts * priceScaleRatio).toFixed(2)
-);
+      // ✅ FINAL GROSS UNIT (tax-inclusive)
+      const grossUnit = Number(
+        (grossUnitBeforeAllDiscounts * priceScaleRatio).toFixed(2)
+      );
 
-// LINE TOTAL
-const grossLineTotal = Number((grossUnit * qty).toFixed(2));
+      // LINE TOTAL
+      const grossLineTotal = Number((grossUnit * qty).toFixed(2));
 
-// NET + TAX (derived from gross)
-const netUnit = Number(
-  ((grossUnit * 100) / (100 + it.tax)).toFixed(2)
-);
+      // NET + TAX (derived from gross)
+      const netUnit = Number(
+        ((grossUnit * 100) / (100 + it.tax)).toFixed(2)
+      );
 
-const taxAmount = Number(
-  (grossLineTotal - netUnit * qty).toFixed(2)
-);
+      const taxAmount = Number(
+        (grossLineTotal - netUnit * qty).toFixed(2)
+      );
 
-return {
-  tenant_id,
-  invoice_id: invoice.id,
-  product_id: it.product_id,
-  quantity: qty,
-  price: grossUnit,        // ✅ tax-inclusive after coupon
-  tax: it.tax,
-  net_price: netUnit,
-  tax_amount: taxAmount,
-  discount_amount: discountPerUnit,
-  total: grossLineTotal,  // ✅ MUST match invoice final
-};
+      return {
+        tenant_id,
+        invoice_id: invoice.id,
+        product_id: it.product_id,
+        quantity: qty,
+        price: grossUnit,        // ✅ tax-inclusive after coupon
+        tax: it.tax,
+        net_price: netUnit,
+        tax_amount: taxAmount,
+        discount_amount: discountPerUnit,
+        total: grossLineTotal,  // ✅ MUST match invoice final
+      };
 
 
     });
-const roundingDiff =
-  Number(gross_amount) -
-  invoiceItemsToInsert.reduce((s, i) => s + Number(i.total), 0);
+    const roundingDiff =
+      Number(gross_amount) -
+      invoiceItemsToInsert.reduce((s, i) => s + Number(i.total), 0);
 
-if (Math.abs(roundingDiff) >= 0.01) {
-  const item = invoiceItemsToInsert[0];
+    if (Math.abs(roundingDiff) >= 0.01) {
+      const item = invoiceItemsToInsert[0];
 
-  // 1️⃣ Fix total
-  item.total = Number((item.total + roundingDiff).toFixed(2));
+      // 1️⃣ Fix total
+      item.total = Number((item.total + roundingDiff).toFixed(2));
 
-  // 2️⃣ Recalculate unit price
-  item.price = Number((item.total / item.quantity).toFixed(2));
+      // 2️⃣ Recalculate unit price
+      item.price = Number((item.total / item.quantity).toFixed(2));
 
-  // 3️⃣ Recalculate net + tax from corrected total
-  const netLine = Number(
-    ((item.total * 100) / (100 + item.tax)).toFixed(2)
-  );
+      // 3️⃣ Recalculate net + tax from corrected total
+      const netLine = Number(
+        ((item.total * 100) / (100 + item.tax)).toFixed(2)
+      );
 
-  item.tax_amount = Number((item.total - netLine).toFixed(2));
-  item.net_price = Number((netLine / item.quantity).toFixed(2));
-}
+      item.tax_amount = Number((item.total - netLine).toFixed(2));
+      item.net_price = Number((netLine / item.quantity).toFixed(2));
+    }
 
-// ✅ FINAL TAX & NET — derived from invoice items ONLY
-const totalTaxFinal = Number(
-  invoiceItemsToInsert.reduce(
-    (sum, it) => sum + Number(it.tax_amount || 0),
-    0
-  ).toFixed(2)
-);
+    // ✅ FINAL TAX & NET — derived from invoice items ONLY
+    const totalTaxFinal = Number(
+      invoiceItemsToInsert.reduce(
+        (sum, it) => sum + Number(it.tax_amount || 0),
+        0
+      ).toFixed(2)
+    );
 
-net_amount = Number(
-  (gross_amount - totalTaxFinal).toFixed(2)
-);
+    net_amount = Number(
+      (gross_amount - totalTaxFinal).toFixed(2)
+    );
 
     const { error: itemsError } = await supabase
       .from("invoice_items")
@@ -752,45 +777,45 @@ net_amount = Number(
     }
 
     // -----------------------------
-    // STEP 11: UPDATE INVENTORY (synchronous)
+    // STEP 11: UPDATE INVENTORY (ATOMIC - CONCURRENT SAFE)
+    // ✅ FIXED: Uses atomic RPC to prevent overselling
     // -----------------------------
     const lowStockAlerts = [];
-    const inventoryUpdates = [];
 
     for (const it of itemsWithDiscounts) {
+      // ✅ ATOMIC: Decrement inventory using RPC (concurrent-safe)
+      const { data: inventoryResult, error: invError } = await supabase
+        .rpc('decrement_inventory', {
+          p_tenant_id: tenant_id,
+          p_product_id: it.product_id,
+          p_quantity: it.qty
+        });
+
+      if (invError) {
+        console.error(`❌ Inventory update failed for product ${it.product_id}:`, invError);
+        throw new Error(`Inventory update failed: ${invError.message}`);
+      }
+
+      // Check for low stock alerts
       const { data: invData } = await supabase
         .from("inventory")
-        .select("id, quantity, reorder_level, product_id")
+        .select("reorder_level")
         .eq("tenant_id", tenant_id)
         .eq("product_id", it.product_id)
-        .maybeSingle();
+        .single();
 
-      if (!invData) {
-        throw new Error(
-          `Inventory not found for product_id ${it.product_id}. Add inventory via PURCHASE first.`
-        );
-      }
+      if (inventoryResult && inventoryResult[0]) {
+        const newQty = inventoryResult[0].new_quantity;
 
-      const newQty = Math.max(0, Number(invData.quantity || 0) - it.qty);
-
-      inventoryUpdates.push(
-        supabase
-          .from("inventory")
-          .update({ quantity: newQty })
-          .eq("id", invData.id)
-          .eq("tenant_id", tenant_id)
-      );
-
-      if (newQty <= Number(invData.reorder_level || 0)) {
-        lowStockAlerts.push({
-          product_id: it.product_id,
-          newQty,
-          reorder_level: invData.reorder_level,
-        });
+        if (newQty <= Number(invData?.reorder_level || 0)) {
+          lowStockAlerts.push({
+            product_id: it.product_id,
+            newQty,
+            reorder_level: invData?.reorder_level,
+          });
+        }
       }
     }
-
-    if (inventoryUpdates.length > 0) await Promise.all(inventoryUpdates);
 
     // -----------------------------
     // STEP 12: INSERT STOCK MOVEMENTS
@@ -838,15 +863,15 @@ net_amount = Number(
     // -----------------------------
     await supabase
       .from("invoices")
-  .update({
-    total_amount: net_amount,       // ✅ FIX
-    final_amount: gross_amount,
-    item_discount_total,
-    bill_discount_total,
-    coupon_discount_total,
-    membership_discount_total,
-    employee_discount_total,
-  })
+      .update({
+        total_amount: net_amount,       // ✅ FIX
+        final_amount: gross_amount,
+        item_discount_total,
+        bill_discount_total,
+        coupon_discount_total,
+        membership_discount_total,
+        employee_discount_total,
+      })
       .eq("id", invoice.id);
 
     // -----------------------------
@@ -889,62 +914,74 @@ net_amount = Number(
     // };
 
     // --- Generate PDF before sending response ---
-// -----------------------------
-// STEP 16: Generate PDF before sending response
-// -----------------------------
-const pdfBuffer = await generatePDF({
-  invoiceNumber: invoice_number,
-  items: itemsWithNames,
- total: gross_amount,
+    // -----------------------------
+    // STEP 16: Generate PDF before sending response
+    // -----------------------------
+    const pdfBuffer = await generatePDF({
+      invoiceNumber: invoice_number,
+      items: itemsWithNames,
+      total: gross_amount,
 
-  payment_method,
- subtotal: net_amount,
-  baseUrl,
-  businessName,
-});
+      payment_method,
+      subtotal: net_amount,
+      baseUrl,
+      businessName,
+    });
 
-// -----------------------------
-// STEP 17: Start deferred operations
-// -----------------------------
-setImmediate(() => {
-  processDeferredOperations({
-    tenant_id,
-    invoice,
-    itemsWithDiscounts,
-    customer,
-    customer_id,
-    isLoyaltyCustomer,
-    gross_amount,
-    payment_method,
-    item_discount_total,
-    bill_discount_total,
-    employee_discount_total,
-    redeem_points,
-    earn_points,
-    currentPoints,
-    lifetimePoints,
-    coaAccounts,
-    baseUrl,
-    businessName,
-    invoiceItemsToInsert,
-  });
-});
+    // -----------------------------
+    // STEP 17: ✅ SYNCHRONOUS ACCOUNTING (CRITICAL FOR DATA INTEGRITY)
+    // -----------------------------
+    // IMPORTANT: Accounting MUST complete before sending response
+    // This ensures books are balanced even if something fails
+    console.log(`🔄 Processing accounting for invoice ${invoice.id}...`);
 
-console.log(`✅ Invoice ${invoice_number} created — PDF sent, deferred ops queued.`);
+    try {
+      await processDeferredOperations({
+        tenant_id,
+        invoice,
+        itemsWithDiscounts,
+        customer,
+        customer_id,
+        isLoyaltyCustomer,
+        gross_amount,
+        payment_method,
+        item_discount_total,
+        bill_discount_total,
+        employee_discount_total,
+        redeem_points,
+        earn_points,
+        currentPoints,
+        lifetimePoints,
+        coaAccounts,
+        baseUrl,
+        businessName,
+        invoiceItemsToInsert,
+      });
 
-// -----------------------------
-// STEP 18: SEND PDF AND END RESPONSE
-// -----------------------------
-res.setHeader("Content-Type", "application/pdf");
-res.setHeader(
-  "Content-Disposition",
-  `attachment; filename=invoice-${invoice_number}.pdf`
-);
+      console.log(`✅ Invoice ${invoice_number} created with complete accounting!`);
+    } catch (accountingError) {
+      console.error(`❌ CRITICAL: Accounting failed for invoice ${invoice.id}:`, accountingError);
+      // Accounting failed but invoice exists - requires manual intervention
+      return res.status(500).json({
+        error: "Invoice created but accounting failed - please contact support",
+        invoice_id: invoice.id,
+        invoice_number: invoice_number
+      });
+    }
 
-return res.send(pdfBuffer);
+    // -----------------------------
+    // STEP 18: SEND PDF AND END RESPONSE
+    // -----------------------------
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=invoice-${invoice_number}.pdf`
+    );
+
+    return res.send(pdfBuffer);
 
 
-    
+
   } catch (err) {
     console.error("❌ createInvoice error:", err);
     // If headers already sent, just log

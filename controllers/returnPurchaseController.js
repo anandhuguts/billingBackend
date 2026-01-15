@@ -254,43 +254,43 @@ export const createPurchaseReturn = async (req, res) => {
     }
 
     // Prevent returning more than purchased (basic check)
-  /* =========================
-   2B) Validate remaining returnable quantity
-========================= */
+    /* =========================
+     2B) Validate remaining returnable quantity
+  ========================= */
 
-// A) Purchased qty
-const purchasedQty = Number(purchaseItem.quantity);
+    // A) Purchased qty
+    const purchasedQty = Number(purchaseItem.quantity);
 
-// B) Total returned qty so far
-const { data: prevReturns, error: prevErr } = await supabase
-  .from("purchase_returns")
-  .select("quantity")
-  .eq("tenant_id", tenant_id)
-  .eq("purchase_id", purchase_id)
-  .eq("product_id", product_id);
+    // B) Total returned qty so far
+    const { data: prevReturns, error: prevErr } = await supabase
+      .from("purchase_returns")
+      .select("quantity")
+      .eq("tenant_id", tenant_id)
+      .eq("purchase_id", purchase_id)
+      .eq("product_id", product_id);
 
-if (prevErr) throw prevErr;
+    if (prevErr) throw prevErr;
 
-const returnedQty = prevReturns?.reduce(
-  (sum, r) => sum + Number(r.quantity || 0),
-  0
-) || 0;
+    const returnedQty = prevReturns?.reduce(
+      (sum, r) => sum + Number(r.quantity || 0),
+      0
+    ) || 0;
 
-// C) Remaining qty allowed
-const remainingQty = purchasedQty - returnedQty;
+    // C) Remaining qty allowed
+    const remainingQty = purchasedQty - returnedQty;
 
-// D) Validations
-if (remainingQty <= 0) {
-  return res.status(400).json({
-    error: "All purchased quantity for this product has already been returned",
-  });
-}
+    // D) Validations
+    if (remainingQty <= 0) {
+      return res.status(400).json({
+        error: "All purchased quantity for this product has already been returned",
+      });
+    }
 
-if (qty > remainingQty) {
-  return res.status(400).json({
-    error: `Only ${remainingQty} units can be returned for this product`,
-  });
-}
+    if (qty > remainingQty) {
+      return res.status(400).json({
+        error: `Only ${remainingQty} units can be returned for this product`,
+      });
+    }
 
     const unitCost = Number(purchaseItem.cost_price);
     const taxRate = Number(product.tax || 0);
@@ -335,44 +335,39 @@ if (qty > remainingQty) {
     const purchase_return_id = inserted.id;
 
     /* ===========================
-       4) UPDATE INVENTORY
+       4) ✅ ATOMIC UPDATE INVENTORY
     =========================== */
 
+    // Check if sufficient inventory exists
     const { data: existingInv, error: invErr } = await supabase
       .from("inventory")
-      .select("id, quantity")
+      .select("quantity")
       .eq("tenant_id", tenant_id)
       .eq("product_id", product_id)
       .maybeSingle();
 
     if (invErr) throw invErr;
-if (existingInv && Number(existingInv.quantity) < qty) {
-  return res.status(400).json({
-    error: "Insufficient inventory to process purchase return",
-  });
-}
 
-    if (existingInv) {
-      await supabase
-        .from("inventory")
-        .update({
-          quantity: Number(existingInv.quantity || 0) - qty,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", existingInv.id);
-    } else {
-      // if stock not tracked before, returning still means negative stock
-      await supabase.from("inventory").insert([
-        {
-          tenant_id,
-          product_id,
-          quantity: -qty,
-          updated_at: new Date().toISOString(),
-        },
-      ]);
+    if (existingInv && Number(existingInv.quantity) < qty) {
+      return res.status(400).json({
+        error: "Insufficient inventory to process purchase return",
+      });
     }
 
-    // Stock movement = NEGATIVE qty
+    // ✅ ATOMIC: Decrement inventory using RPC (concurrent-safe)
+    const { error: decrementError } = await supabase.rpc('decrement_inventory', {
+      p_tenant_id: tenant_id,
+      p_product_id: product_id,
+      p_quantity: qty
+      // Note: cost_value is calculated inside RPC from products table
+    });
+
+    if (decrementError) {
+      console.error(`Inventory decrement failed for product ${product_id}:`, decrementError);
+      throw new Error(`Inventory update failed: ${decrementError.message}`);
+    }
+
+    // Stock movement = NEGATIVE qty (goods going out)
     await supabase.from("stock_movements").insert([
       {
         tenant_id,
@@ -389,134 +384,97 @@ if (existingInv && Number(existingInv.quantity) < qty) {
        5) ACCOUNTING
     =========================== */
 
-   /* ===========================
-   5) ACCOUNTING (Journal Only)
-=========================== */
-
-const coaMap = await getCoaMap(tenant_id);
-
-const desc = `Purchase Return #${purchase_return_id} (Purchase #${
-  purchase.invoice_number || purchase_id
-})`;
-
-// ---- Daybook ----
-// Money IN (refund) → DEBIT
-await supabase.from("daybook").insert([
-  {
-    tenant_id,
-    entry_type: "purchase_return",
-    description: desc,
-    debit: refund_method === "cash" ? refundAmount : 0,
-    credit: refund_method === "credit_note" ? refundAmount : 0,
-    reference_id: purchase_return_id,
-  },
-]);
-
-
-// ------------------------------
-// 5A — REFUND METHOD
-// ------------------------------
-
-// CASH refund → Supplier gives us money back
-// Decide where refund goes (Cash OR Accounts Payable)
-const settlementAccount =
-  refund_method === "cash"
-    ? coaId(coaMap, "cash")
-    : coaId(coaMap, "accounts payable");
-
-// Inventory reversal (goods going out)
-await addJournalEntry({
-  tenant_id,
-  debit_account: coaId(coaMap, "purchase returns"), // contra-expense
-  credit_account: coaId(coaMap, "inventory"),
-  amount: netAmount,
-  description: `${desc} - Inventory returned`,
-  reference_id: purchase_return_id,
-  reference_type: "purchase_return",
-});
-
-// VAT reversal (input VAT reduced)
-if (taxAmount > 0) {
-  await addJournalEntry({
-    tenant_id,
-    debit_account: coaId(coaMap, "purchase returns"),
-    credit_account: coaId(coaMap, "vat input"),
-    amount: taxAmount,
-    description: `${desc} - VAT input reversal`,
-    reference_id: purchase_return_id,
-    reference_type: "purchase_return",
-  });
-}
-// ------------------------------
-// 5B — Settlement (FINAL & REQUIRED)
-// ------------------------------
-await addJournalEntry({
-  tenant_id,
-  debit_account: settlementAccount, // Cash OR Accounts Payable
-  credit_account: coaId(coaMap, "purchase returns"),
-  amount: refundAmount,
-  description: `${desc} - Refund settlement`,
-  reference_id: purchase_return_id,
-  reference_type: "purchase_return",
-});
-
-
-
-
-
-  
     /* ===========================
-       6) VAT REVERSAL
+    5) ACCOUNTING (Journal Only)
+ =========================== */
+
+    const coaMap = await getCoaMap(tenant_id);
+
+    const desc = `Purchase Return #${purchase_return_id} (Purchase #${purchase.invoice_number || purchase_id
+      })`;
+
+    // ---- Daybook ----
+    // Money IN (refund) → DEBIT
+    await supabase.from("daybook").insert([
+      {
+        tenant_id,
+        entry_type: "purchase_return",
+        description: desc,
+        debit: refund_method === "cash" ? refundAmount : 0,
+        credit: refund_method === "credit_note" ? refundAmount : 0,
+        reference_id: purchase_return_id,
+      },
+    ]);
+
+
+    // ------------------------------
+    // 5A — REFUND METHOD
+    // ------------------------------
+
+    // CASH refund → Supplier gives us money back
+    // Decide where refund goes (Cash OR Accounts Payable)
+    const settlementAccount =
+      refund_method === "cash"
+        ? coaId(coaMap, "cash")
+        : coaId(coaMap, "accounts payable");
+
+    // Inventory reversal (goods going out)
+    await addJournalEntry({
+      tenant_id,
+      debit_account: coaId(coaMap, "purchase returns"), // contra-expense
+      credit_account: coaId(coaMap, "inventory"),
+      amount: netAmount,
+      description: `${desc} - Inventory returned`,
+      reference_id: purchase_return_id,
+      reference_type: "purchase_return",
+    });
+
+    // VAT reversal (input VAT reduced)
+    if (taxAmount > 0) {
+      await addJournalEntry({
+        tenant_id,
+        debit_account: coaId(coaMap, "purchase returns"),
+        credit_account: coaId(coaMap, "vat input"),
+        amount: taxAmount,
+        description: `${desc} - VAT input reversal`,
+        reference_id: purchase_return_id,
+        reference_type: "purchase_return",
+      });
+    }
+    // ------------------------------
+    // 5B — Settlement (FINAL & REQUIRED)
+    // ------------------------------
+    await addJournalEntry({
+      tenant_id,
+      debit_account: settlementAccount, // Cash OR Accounts Payable
+      credit_account: coaId(coaMap, "purchase returns"),
+      amount: refundAmount,
+      description: `${desc} - Refund settlement`,
+      reference_id: purchase_return_id,
+      reference_type: "purchase_return",
+    });
+
+
+
+
+
+
+    /* ===========================
+       6) ✅ ATOMIC VAT REVERSAL
     =========================== */
 
     const now = new Date();
-    const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
-      2,
-      "0"
-    )}`;
+    const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const { data: vatRow, error: vatErr } = await supabase
-      .from("vat_reports")
-      .select("*")
-      .eq("tenant_id", tenant_id)
-      .eq("period", period)
-      .maybeSingle();
+    const { error: vatError } = await supabase.rpc('decrement_purchase_vat', {
+      p_tenant_id: tenant_id,
+      p_period: period,
+      p_purchases: netAmount,
+      p_vat: taxAmount
+    });
 
-    if (vatErr) throw vatErr;
-
-    const prevPurchases = Number(vatRow?.total_purchases || 0);
-    const prevPurchaseVat = Number(vatRow?.purchase_vat || 0);
-    const prevSalesVat = Number(vatRow?.sales_vat || 0);
-
-    const newPurchases = prevPurchases - netAmount;
-    const newPurchaseVat = prevPurchaseVat - taxAmount;
-    const newVatPayable = prevSalesVat - newPurchaseVat; // VAT payable = sales_vat - purchase_vat
-
-    if (vatRow) {
-      await supabase
-        .from("vat_reports")
-        .update({
-          total_purchases: newPurchases,
-          purchase_vat: newPurchaseVat,
-          vat_payable: newVatPayable,
-        })
-        .eq("id", vatRow.id);
-    } else {
-      // if no row for this period, start it with negative purchases (purchase return first)
-      const initialPurchaseVat = -taxAmount;
-      const initialVatPayable = 0 - initialPurchaseVat; // = +taxAmount
-
-      await supabase.from("vat_reports").insert([
-        {
-          tenant_id,
-          period,
-          total_sales: 0,
-          sales_vat: 0,
-          total_purchases: -netAmount,
-          purchase_vat: initialPurchaseVat,
-          vat_payable: initialVatPayable,
-        },
-      ]);
+    if (vatError) {
+      console.error("⚠️ VAT report update failed (non-critical):", vatError);
     }
 
     /* ===========================
@@ -581,27 +539,9 @@ export const updatePurchaseReturn = async (req, res) => {
 ========================================================= */
 
 export const deletePurchaseReturn = async (req, res) => {
-  try {
-    const tenant_id = req.user?.tenant_id;
-    if (!tenant_id) return res.status(403).json({ error: "Unauthorized" });
-
-    const { id } = req.params;
-
-    const { data, error } = await supabase
-      .from("purchase_returns")
-      .delete()
-      .eq("id", id)
-      .eq("tenant_id", tenant_id)
-      .select();
-
-    if (error) return res.status(500).json({ error: error.message });
-    if (!data || data.length === 0) {
-      return res.status(404).json({ error: "Purchase return not found" });
-    }
-
-    res.json({ message: "Deleted", purchase_return: data[0] });
-  } catch (err) {
-    console.error("deletePurchaseReturn error", err);
-    res.status(500).json({ error: "Internal server error" });
-  }
+  return res.status(403).json({
+    error: "Purchase Return deletion is disabled",
+    message: "Deleting returns would create accounting inconsistencies. " +
+      "Returns are permanent records. Contact support if needed."
+  });
 };

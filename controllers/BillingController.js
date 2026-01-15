@@ -13,7 +13,7 @@ import { generatePDF } from "../scripts/pdfGenerator.js";
 export const createInvoice = async (req, res) => {
 
   const baseUrl = `${req.protocol}://${req.get("host")}`;
-const businessName = req.user.full_name|| "SUPERMART";
+  const businessName = req.user.full_name || "SUPERMART";
   try {
     const tenant_id = req.user.tenant_id;
     const {
@@ -25,36 +25,36 @@ const businessName = req.user.full_name|| "SUPERMART";
     } = req.body;
     console.log(req.body);
 
-    
+
 
     if (!items || items.length === 0)
       return res.status(400).json({ error: "No items provided" });
 
     // ======================================
-// FETCH PRODUCT PRICES & TAX FROM DB
-// ======================================
-const productIds = items.map((i) => i.product_id);
+    // FETCH PRODUCT PRICES & TAX FROM DB
+    // ======================================
+    const productIds = items.map((i) => i.product_id);
 
-const { data: productData, error: prodErr } = await supabase
-  .from("products")
-  .select("id, selling_price, tax")
-  .in("id", productIds);
+    const { data: productData, error: prodErr } = await supabase
+      .from("products")
+      .select("id, selling_price, tax")
+      .in("id", productIds);
 
-if (prodErr) {
-  return res.status(500).json({ error: "Failed to fetch product info" });
-}
+    if (prodErr) {
+      return res.status(500).json({ error: "Failed to fetch product info" });
+    }
 
-const mergedItems = items.map((i) => {
-  const p = productData.find((x) => x.id === i.product_id);
-  if (!p) throw new Error(`Product not found: ${i.product_id}`);
+    const mergedItems = items.map((i) => {
+      const p = productData.find((x) => x.id === i.product_id);
+      if (!p) throw new Error(`Product not found: ${i.product_id}`);
 
-  return {
-    product_id: i.product_id,
-    qty: i.qty,
-    price: Number(p.selling_price),   // backend price override
-    tax: Number(p.tax),       // backend tax override
-  };
-});
+      return {
+        product_id: i.product_id,
+        qty: i.qty,
+        price: Number(p.selling_price),   // backend price override
+        tax: Number(p.tax),       // backend tax override
+      };
+    });
 
 
     const isLoyaltyCustomer = !!customer_id;
@@ -76,12 +76,12 @@ const mergedItems = items.map((i) => {
     // 1) Apply discounts
     let discountResult;
     try {
-    discountResult = await applyDiscounts({
-  items: mergedItems,
-  tenant_id,
-  customer,
-  couponCode: coupon_code,
-});
+      discountResult = await applyDiscounts({
+        items: mergedItems,
+        tenant_id,
+        customer,
+        couponCode: coupon_code,
+      });
 
     } catch (err) {
       return res.status(400).json({ error: err.message });
@@ -98,19 +98,19 @@ const mergedItems = items.map((i) => {
       invoiceDiscounts,
       appliedCouponRule,
     } = discountResult;
-// ====================================
-// EMPLOYEE DISCOUNT (STAFF USER ONLY)
-// ====================================
-const { discount: employee_discount_total } = await calculateEmployeeDiscount({
-  tenant_id,
-  buyer_employee_id: req.body.employee_id || null,
-  subtotal
-});
+    // ====================================
+    // EMPLOYEE DISCOUNT (STAFF USER ONLY)
+    // ====================================
+    const { discount: employee_discount_total } = await calculateEmployeeDiscount({
+      tenant_id,
+      buyer_employee_id: req.body.employee_id || null,
+      subtotal
+    });
 
 
 
     let total_amount =
-  total_before_redeem - employee_discount_total;
+      total_before_redeem - employee_discount_total;
 
 
     // 2) Coupon per-customer limit validation (if coupon and customer)
@@ -187,59 +187,59 @@ const { discount: employee_discount_total } = await calculateEmployeeDiscount({
     const invoice_number = `INV-${year}-${String(seq).padStart(4, "0")}`;
 
     // 4) Insert invoice WITHOUT invoice_number first
-// ===========================
-// 4) INSERT INVOICE (DEBUG LOGGING)
-// ===========================
+    // ===========================
+    // 4) INSERT INVOICE (DEBUG LOGGING)
+    // ===========================
 
 
-const insertPayload = {
-  tenant_id,
-  handled_by: req.user.id,
-  customer_id: isLoyaltyCustomer ? customer_id : null,
-  total_amount,
-  payment_method,
-  item_discount_total,
-  bill_discount_total,
-  coupon_discount_total,
-  membership_discount_total,
-  employee_discount_total,
-  final_amount: total_amount,
-};
-
-
-
-const insertResult = await supabase
-  .from("invoices")
-  .insert([insertPayload])
-  .select("*")
-  .maybeSingle();
+    const insertPayload = {
+      tenant_id,
+      handled_by: req.user.id,
+      customer_id: isLoyaltyCustomer ? customer_id : null,
+      total_amount,
+      payment_method,
+      item_discount_total,
+      bill_discount_total,
+      coupon_discount_total,
+      membership_discount_total,
+      employee_discount_total,
+      final_amount: total_amount,
+    };
 
 
 
-const invoice = insertResult.data;
-const invoiceErr = insertResult.error;
-
-if (invoiceErr) {
-  console.error("❌ SUPABASE INSERT ERROR:", invoiceErr);
-  return res.status(500).json({ error: invoiceErr.message });
-}
-
-if (!invoice) {
-  console.error("❌ INSERT RETURNED NULL. MOST LIKELY CAUSE: Missing required column.");
-  return res.status(500).json({ error: "Invoice insert returned null. Check console." });
-}
+    const insertResult = await supabase
+      .from("invoices")
+      .insert([insertPayload])
+      .select("*")
+      .maybeSingle();
 
 
 
+    const invoice = insertResult.data;
+    const invoiceErr = insertResult.error;
 
-      // === UPDATE EMPLOYEE DISCOUNT USAGE WITH INVOICE ID ===
-if (employee_discount_total > 0) {
-  await supabase
-    .from("employee_discount_usage")
-    .update({ invoice_id: invoice.id })
-    .eq("employee_id", req.body.employee_id)
-    .is("invoice_id", null);
-}
+    if (invoiceErr) {
+      console.error("❌ SUPABASE INSERT ERROR:", invoiceErr);
+      return res.status(500).json({ error: invoiceErr.message });
+    }
+
+    if (!invoice) {
+      console.error("❌ INSERT RETURNED NULL. MOST LIKELY CAUSE: Missing required column.");
+      return res.status(500).json({ error: "Invoice insert returned null. Check console." });
+    }
+
+
+
+
+    // === UPDATE EMPLOYEE DISCOUNT USAGE WITH INVOICE ID ===
+    if (employee_discount_total > 0) {
+      await supabase
+        .from("employee_discount_usage")
+        .update({ invoice_id: invoice.id })
+        .eq("employee_id", req.body.employee_id)
+        .is("invoice_id", null);
+    }
 
 
     if (invoiceErr) throw invoiceErr;
@@ -251,11 +251,11 @@ if (employee_discount_total > 0) {
       .eq("id", invoice.id);
 
 
-      const { data: updatedInvoice } = await supabase
-  .from("invoices")
-  .select("*")
-  .eq("id", invoice.id)
-  .single();
+    const { data: updatedInvoice } = await supabase
+      .from("invoices")
+      .select("*")
+      .eq("id", invoice.id)
+      .single();
 
     // 5) Attach invoice_id to earlier redeem transactions
     if (isLoyaltyCustomer && redeem_points > 0) {
@@ -268,25 +268,25 @@ if (employee_discount_total > 0) {
 
     // 6) Insert invoice_items with per-unit discount & net_price
     const invoiceItemsToInsert = itemsWithDiscounts.map((it) => {
-  const qty = Number(it.qty || 0);
-  const price = Number(it.price || 0);
-  const discountPerUnit = Number(it.discount_amount || 0);
-  const netUnit = price - discountPerUnit;
-  const lineTotal = netUnit * qty;
+      const qty = Number(it.qty || 0);
+      const price = Number(it.price || 0);
+      const discountPerUnit = Number(it.discount_amount || 0);
+      const netUnit = price - discountPerUnit;
+      const lineTotal = netUnit * qty;
 
-  return {
-    tenant_id,
-    invoice_id: invoice.id,
-    product_id: it.product_id,
-    quantity: qty,
-    price,
-    tax: it.tax,   // percent
-    tax_amount: Number(it.taxAmount || 0),  // <-- NEW FIELD
-    discount_amount: discountPerUnit,
-    net_price: netUnit,
-    total: lineTotal,
-  };
-});
+      return {
+        tenant_id,
+        invoice_id: invoice.id,
+        product_id: it.product_id,
+        quantity: qty,
+        price,
+        tax: it.tax,   // percent
+        tax_amount: Number(it.taxAmount || 0),  // <-- NEW FIELD
+        discount_amount: discountPerUnit,
+        net_price: netUnit,
+        total: lineTotal,
+      };
+    });
 
 
     const { error: itemsError } = await supabase
@@ -318,40 +318,40 @@ if (employee_discount_total > 0) {
     }
 
     // 9) Update inventory
-  // 9) Update inventory
-const lowStockAlerts = [];
-for (const it of itemsWithDiscounts) {
-  const { data: invData } = await supabase
-    .from("inventory")
-    .select("id, quantity, reorder_level, product_id")
-    .eq("tenant_id", tenant_id)
-    .eq("product_id", it.product_id)
-    .maybeSingle();
+    // 9) Update inventory
+    const lowStockAlerts = [];
+    for (const it of itemsWithDiscounts) {
+      const { data: invData } = await supabase
+        .from("inventory")
+        .select("id, quantity, reorder_level, product_id")
+        .eq("tenant_id", tenant_id)
+        .eq("product_id", it.product_id)
+        .maybeSingle();
 
-  // ❌ A sale should NEVER create inventory
-  if (!invData) {
-    throw new Error(
-      `Inventory not found for product_id ${it.product_id}. 
+      // ❌ A sale should NEVER create inventory
+      if (!invData) {
+        throw new Error(
+          `Inventory not found for product_id ${it.product_id}. 
        Add inventory via PURCHASE first.`
-    );
-  }
+        );
+      }
 
-  const newQty = Math.max(0, Number(invData.quantity || 0) - it.qty);
+      const newQty = Math.max(0, Number(invData.quantity || 0) - it.qty);
 
-  await supabase
-    .from("inventory")
-    .update({ quantity: newQty })
-    .eq("id", invData.id)
-    .eq("tenant_id", tenant_id);
+      await supabase
+        .from("inventory")
+        .update({ quantity: newQty })
+        .eq("id", invData.id)
+        .eq("tenant_id", tenant_id);
 
-  if (newQty <= Number(invData.reorder_level || 0)) {
-    lowStockAlerts.push({
-      product_id: it.product_id,
-      newQty,
-      reorder_level: invData.reorder_level,
-    });
-  }
-}
+      if (newQty <= Number(invData.reorder_level || 0)) {
+        lowStockAlerts.push({
+          product_id: it.product_id,
+          newQty,
+          reorder_level: invData.reorder_level,
+        });
+      }
+    }
 
     // 9.1) INSERT STOCK MOVEMENTS FOR SALES
     for (const it of itemsWithDiscounts) {
@@ -450,9 +450,8 @@ for (const it of itemsWithDiscounts) {
 
     try {
       const saleAmount = total_amount;
-      const saleDescription = `Invoice #${
-        invoice.invoice_number || invoice.id
-      }`;
+      const saleDescription = `Invoice #${invoice.invoice_number || invoice.id
+        }`;
 
       // Daybook entry (Sale)
       await supabase.from("daybook").insert([
@@ -474,7 +473,7 @@ for (const it of itemsWithDiscounts) {
       const netSales = Math.max(0, saleAmount - totalTax);
 
       // Ledger: Debit CASH / RECEIVABLE
- 
+
 
 
 
@@ -545,16 +544,16 @@ for (const it of itemsWithDiscounts) {
       }
 
       // EMPLOYEE DISCOUNT (Expense)
-if (employee_discount_total > 0) {
-  await addJournalEntry({
-    tenant_id,
-    debit_account: coaId("Staff Discount Expense"),
-    credit_account: coaId("Sales"),
-    amount: employee_discount_total,
-    description: `Employee discount for invoice #${invoice.id}`,
-    reference_id: invoice.id,
-  });
-}
+      if (employee_discount_total > 0) {
+        await addJournalEntry({
+          tenant_id,
+          debit_account: coaId("Staff Discount Expense"),
+          credit_account: coaId("Sales"),
+          amount: employee_discount_total,
+          description: `Employee discount for invoice #${invoice.id}`,
+          reference_id: invoice.id,
+        });
+      }
 
 
       if (bill_discount_total > 0) {
@@ -663,21 +662,21 @@ if (employee_discount_total > 0) {
     }
 
     // 13) Fetch product names and merge into items (for response)
- const productIds2 = [
-  ...new Set(invoiceItemsToInsert.map((i) => i.product_id)),
-];
+    const productIds2 = [
+      ...new Set(invoiceItemsToInsert.map((i) => i.product_id)),
+    ];
 
-const { data: productNames, error: productNameErr } = await supabase
-  .from("products")
-  .select("id, name")
-  .in("id", productIds2);
+    const { data: productNames, error: productNameErr } = await supabase
+      .from("products")
+      .select("id, name")
+      .in("id", productIds2);
 
-if (productNameErr) throw productNameErr;
+    if (productNameErr) throw productNameErr;
 
-const productMap = {};
-(productNames || []).forEach((p) => {
-  productMap[p.id] = p.name;
-});
+    const productMap = {};
+    (productNames || []).forEach((p) => {
+      productMap[p.id] = p.name;
+    });
 
 
     const itemsWithNames = invoiceItemsToInsert.map((it) => ({
@@ -686,41 +685,41 @@ const productMap = {};
     }));
 
     // -------------------------------------------
-// 14) GENERATE RECEIPT PDF (BACKEND VERSION)
-// -------------------------------------------
-const pdfUrl = await generatePDF({
-  invoiceNumber: invoice_number,
-  items: itemsWithNames,
-  total: total_amount,
-  payment_method,
-  subtotal,
-  baseUrl,
-  businessName
-});
-res.setHeader("Content-Type", "application/pdf");
-res.setHeader("Content-Disposition", `attachment; filename=invoice-${invoice_number}.pdf`);
-return res.send(pdfUrl);
+    // 14) GENERATE RECEIPT PDF (BACKEND VERSION)
+    // -------------------------------------------
+    const pdfUrl = await generatePDF({
+      invoiceNumber: invoice_number,
+      items: itemsWithNames,
+      total: total_amount,
+      payment_method,
+      subtotal,
+      baseUrl,
+      businessName
+    });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename=invoice-${invoice_number}.pdf`);
+    return res.send(pdfUrl);
 
     // Final response
-  return res.status(201).json({
-  message: "Invoice created successfully",
-  invoice: {
-    ...invoice,
-    ...updatedInvoice,
-    subtotal,
-    final_amount: total_amount,
-    pdf_url: pdfUrl
-  },
-  items: itemsWithNames,
-  lowStockAlerts,
-  loyalty: isLoyaltyCustomer
-    ? {
-        earned: earn_points,
-        redeemed: redeem_points,
-        final_balance: currentPoints,
-      }
-    : null,
-});
+    return res.status(201).json({
+      message: "Invoice created successfully",
+      invoice: {
+        ...invoice,
+        ...updatedInvoice,
+        subtotal,
+        final_amount: total_amount,
+        pdf_url: pdfUrl
+      },
+      items: itemsWithNames,
+      lowStockAlerts,
+      loyalty: isLoyaltyCustomer
+        ? {
+          earned: earn_points,
+          redeemed: redeem_points,
+          final_balance: currentPoints,
+        }
+        : null,
+    });
 
   } catch (err) {
     console.error("createInvoice error:", err);

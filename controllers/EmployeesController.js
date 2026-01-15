@@ -7,13 +7,13 @@ export const EmployeesController = {
      GET ALL EMPLOYEES (With salary + position)
   ============================================================ */
   async getAll(req, res) {
-  try {
-    const tenant_id = req.user.tenant_id;
-    const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+    try {
+      const tenant_id = req.user.tenant_id;
+      const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
 
-    const { data, error } = await supabase
-      .from("employees")
-      .select(`
+      const { data, error } = await supabase
+        .from("employees")
+        .select(`
         id,
         full_name,
         phone,
@@ -26,29 +26,29 @@ export const EmployeesController = {
           net_salary
         )
       `)
-      .eq("tenant_id", tenant_id)
-      .eq("salary_payments.month", currentMonth)   // joined table filter
-      .order("created_at", { ascending: false });
+        .eq("tenant_id", tenant_id)
+        .eq("salary_payments.month", currentMonth)   // joined table filter
+        .order("created_at", { ascending: false });
 
-    if (error) throw error;
+      if (error) throw error;
 
-    // Convert joined result into simple boolean flag
-    const employees = data.map(emp => ({
-      ...emp,
-      is_salary_paid_this_month: emp.salary_payments.length > 0
-    }));
+      // Convert joined result into simple boolean flag
+      const employees = data.map(emp => ({
+        ...emp,
+        is_salary_paid_this_month: emp.salary_payments.length > 0
+      }));
 
-    return res.json({
-      success: true,
-      current_month: currentMonth,
-      data: employees
-    });
+      return res.json({
+        success: true,
+        current_month: currentMonth,
+        data: employees
+      });
 
-  } catch (err) {
-    console.error("getAll employees error:", err);
-    return res.status(500).json({ error: err.message });
-  }
-},
+    } catch (err) {
+      console.error("getAll employees error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+  },
 
   /* ============================================================
      GET ONE EMPLOYEE (includes salary + attendance)
@@ -110,49 +110,16 @@ export const EmployeesController = {
         return res.status(400).json({ error: "Full name is required" });
       }
 
-      /* --------------------------------------------------------
-         1. Create Employee
-      -------------------------------------------------------- */
-      const { data: employeeRow, error: empErr } = await supabase
-        .from("employees")
-        .insert([
-          {
-            tenant_id,
-            full_name,
-            phone,
-            position,
-            salary,
-            is_active: true,
-          },
-        ])
-        .select();
-
-      if (empErr) throw empErr;
-
-      const employee = employeeRow[0];
-
-      /* --------------------------------------------------------
-         2. Salary Master Setup
-      -------------------------------------------------------- */
-      if (salary) {
-        await supabase.from("employee_salary_master").insert([
-          {
-            tenant_id,
-            employee_id: employee.id,
-            monthly_salary: salary,
-          },
-        ]);
-      }
-
-      /* --------------------------------------------------------
-         3. Optional: Create login in users table
-      -------------------------------------------------------- */
+      let employee_id = null;
       let loginRecord = null;
 
+      /* --------------------------------------------------------
+         1. ✅ FIXED: If creating login, create user FIRST
+      -------------------------------------------------------- */
       if (create_login && email && password) {
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        const { data: loginData, error: loginErr } = await supabase
+        const { data: userData, error: loginErr } = await supabase
           .from("users")
           .insert([
             {
@@ -168,13 +135,65 @@ export const EmployeesController = {
 
         if (loginErr) throw loginErr;
 
-        loginRecord = loginData[0];
+        loginRecord = userData[0];
+        employee_id = userData[0].id;  // ✅ Use user's UUID for employee
+      }
+
+      /* --------------------------------------------------------
+         2. Create Employee (linked UUID if login, else auto-generated)
+      -------------------------------------------------------- */
+      const employeeData = {
+        tenant_id,
+        full_name,
+        phone,
+        position,
+        salary,
+        is_active: true,
+      };
+
+      // ✅ Only set ID if we have a user login (to link them)
+      if (employee_id) {
+        employeeData.id = employee_id;
+      }
+
+      const { data: employeeRow, error: empErr } = await supabase
+        .from("employees")
+        .insert([employeeData])
+        .select();
+
+      if (empErr) throw empErr;
+
+      const employee = employeeRow[0];
+
+      /* --------------------------------------------------------
+         3. ✅ FIXED: Always create salary master if salary provided
+      -------------------------------------------------------- */
+      if (salary && Number(salary) > 0) {
+        const { error: salaryMasterErr } = await supabase
+          .from("employee_salary_master")
+          .insert([
+            {
+              tenant_id,
+              employee_id: employee.id,
+              monthly_salary: salary,
+              allowance: 0,
+              deduction: 0,
+            },
+          ]);
+
+        if (salaryMasterErr) {
+          console.error("Salary master creation failed:", salaryMasterErr);
+          // Don't fail - salary can be added later
+        }
       }
 
       return res.json({
         success: true,
         employee,
         login: loginRecord,
+        message: create_login
+          ? "Employee created with login access"
+          : "Employee created (no login)"
       });
     } catch (err) {
       console.error("create employee error:", err);

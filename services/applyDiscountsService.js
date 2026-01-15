@@ -64,40 +64,40 @@ export async function applyDiscounts({
   // -----------------------------------------
   // 1) ITEM-LEVEL DISCOUNTS (on inclusive line total)
 
-   const subtotal = workingItems.reduce((s, it) => s + it.lineGross, 0);
+  const subtotal = workingItems.reduce((s, it) => s + it.lineGross, 0);
   // -----------------------------------------
-for (const rule of itemRules) {
-  for (const it of workingItems) {
+  for (const rule of itemRules) {
+    for (const it of workingItems) {
 
-    // Apply only to matching product
-    if (
-      rule.product_id &&
-      Number(rule.product_id) === Number(it.product_id)
-    ) {
-      // NEW: Check min bill amount BEFORE applying discount
+      // Apply only to matching product
       if (
-        rule.min_bill_amount &&
-        subtotal < Number(rule.min_bill_amount)
+        rule.product_id &&
+        Number(rule.product_id) === Number(it.product_id)
       ) {
-        continue; // Do not apply discount
+        // NEW: Check min bill amount BEFORE applying discount
+        if (
+          rule.min_bill_amount &&
+          subtotal < Number(rule.min_bill_amount)
+        ) {
+          continue; // Do not apply discount
+        }
+
+        let extraLineDiscount = 0;
+
+        if (Number(rule.discount_percent || 0) > 0) {
+          extraLineDiscount =
+            (it.lineGross * Number(rule.discount_percent)) / 100;
+        } else if (Number(rule.discount_amount || 0) > 0) {
+          extraLineDiscount = Number(rule.discount_amount) * it.qty;
+        }
+
+        const remaining = it.lineGross - it.lineDiscount;
+        extraLineDiscount = Math.max(0, Math.min(extraLineDiscount, remaining));
+
+        it.lineDiscount += extraLineDiscount;
       }
-
-      let extraLineDiscount = 0;
-
-      if (Number(rule.discount_percent || 0) > 0) {
-        extraLineDiscount =
-          (it.lineGross * Number(rule.discount_percent)) / 100;
-      } else if (Number(rule.discount_amount || 0) > 0) {
-        extraLineDiscount = Number(rule.discount_amount) * it.qty;
-      }
-
-      const remaining = it.lineGross - it.lineDiscount;
-      extraLineDiscount = Math.max(0, Math.min(extraLineDiscount, remaining));
-
-      it.lineDiscount += extraLineDiscount;
     }
   }
-}
 
 
   // recompute per-unit and net values AFTER item discounts
@@ -124,7 +124,7 @@ for (const rule of itemRules) {
     }
   }
 
- 
+
   const item_discount_total = workingItems.reduce(
     (s, it) => s + it.lineDiscount,
     0
@@ -183,6 +183,15 @@ for (const rule of itemRules) {
 
     if (!rule) throw new Error("Invalid coupon code");
 
+    // ✅ FIXED: Validate coupon dates
+    const now = new Date();
+    if (rule.start_date && new Date(rule.start_date) > now) {
+      throw new Error(`Coupon not yet active. Starts on ${new Date(rule.start_date).toLocaleDateString()}`);
+    }
+    if (rule.end_date && new Date(rule.end_date) < now) {
+      throw new Error(`Coupon expired on ${new Date(rule.end_date).toLocaleDateString()}`);
+    }
+
     if (Number(rule.min_bill_amount || 0) > total_after_bill) {
       throw new Error("Coupon minimum bill not satisfied");
     }
@@ -232,7 +241,7 @@ for (const rule of itemRules) {
       (tr) =>
         tr.tier &&
         String(tr.tier).toLowerCase() ===
-          String(customer.membership_tier).toLowerCase()
+        String(customer.membership_tier).toLowerCase()
     );
 
     if (tierRule) {

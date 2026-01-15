@@ -7,39 +7,39 @@ export const StaffController = {
        GET ALL STAFF USERS
   ============================ */
   async getAll(req, res) {
-  try {
-    const { tenant_id } = req.user;
+    try {
+      const { tenant_id } = req.user;
 
-    // Pagination params
-    const page = Number(req.query.page) || 1;
-    const limit = Number(req.query.limit) || 20;
+      // Pagination params
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 20;
 
-    const start = (page - 1) * limit;
-    const end = start + limit - 1;
+      const start = (page - 1) * limit;
+      const end = start + limit - 1;
 
-    const { data, error, count } = await supabase
-      .from("users")
-      .select("id, full_name, email, role, is_active, created_at", { count: "exact" })
-      .eq("tenant_id", tenant_id)
-      .eq("role", "staff")
-      .order("created_at", { ascending: false })
-      .range(start, end);
+      const { data, error, count } = await supabase
+        .from("users")
+        .select("id, full_name, email, role, is_active, created_at", { count: "exact" })
+        .eq("tenant_id", tenant_id)
+        .eq("role", "staff")
+        .order("created_at", { ascending: false })
+        .range(start, end);
 
-    if (error) throw error;
+      if (error) throw error;
 
-    return res.json({
-      success: true,
-      page,
-      limit,
-      totalRecords: count || 0,
-      totalPages: Math.ceil((count || 0) / limit),
-      data,
-    });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
+      return res.json({
+        success: true,
+        page,
+        limit,
+        totalRecords: count || 0,
+        totalPages: Math.ceil((count || 0) / limit),
+        data,
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error.message });
+    }
   }
-}
-,
+  ,
 
 
   /* ============================
@@ -91,6 +91,26 @@ export const StaffController = {
         ]);
 
       if (empErr) throw empErr;
+
+      // 3️⃣ ✅ NEW: Create salary master if salary provided
+      if (salary && Number(salary) > 0) {
+        const { error: salaryMasterErr } = await supabase
+          .from("employee_salary_master")
+          .insert([
+            {
+              tenant_id,
+              employee_id: user.id,  // Same UUID as user and employee
+              monthly_salary: salary,
+              allowance: 0,
+              deduction: 0,
+            },
+          ]);
+
+        if (salaryMasterErr) {
+          console.error("Salary master creation failed:", salaryMasterErr);
+          // Don't fail - salary can be added later
+        }
+      }
 
       return res.json({
         success: true,

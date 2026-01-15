@@ -320,14 +320,14 @@ export const createPurchase = async (req, res) => {
       netTotal += lineNet;
       taxTotal += lineTax;
 
-   return {
-  product_id: item.product_id,
-  quantity: qty,
-  cost_price: cost,
-  expiry_date: item.expiry_date ?? null,
-  reorder_level: item.reorder_level ?? null,
-  max_stock: item.max_stock ?? null,
-};
+      return {
+        product_id: item.product_id,
+        quantity: qty,
+        cost_price: cost,
+        expiry_date: item.expiry_date ?? null,
+        reorder_level: item.reorder_level ?? null,
+        max_stock: item.max_stock ?? null,
+      };
 
     });
 
@@ -345,21 +345,33 @@ export const createPurchase = async (req, res) => {
     /* ======================================================
        4️⃣ INSERT PURCHASE
     ====================================================== */
-    const { data: purchase, error: purchaseErr } = await supabase
-      .from("purchases")
-      .insert([{
-        tenant_id,
-        supplier_id,
-        invoice_number,
-        total_amount,
-        amount_paid: 0,
-        is_paid: false,
-      }])
-      .select("id, created_at")
-      .single();
+    const { data, error: rpcErr } = await supabase.rpc(
+      "create_purchase_atomic",
+      {
+        p_tenant_id: tenant_id,
+        p_supplier_id: supplier_id,
+        p_invoice_number: invoice_number,
+        p_net_total: netTotal,
+        p_tax_total: taxTotal,
+        p_total_amount: total_amount,
+      }
+    );
 
-    if (purchaseErr) throw purchaseErr;
-    const purchase_id = purchase.id;
+    if (rpcErr) throw rpcErr;
+    if (!data) throw new Error("Purchase RPC returned no data");
+
+    const purchase_id =
+      typeof data === "number"
+        ? data
+        : Array.isArray(data)
+          ? data[0]?.id
+          : data.id;
+
+    if (!purchase_id) {
+      throw new Error("Invalid purchase_id returned from RPC");
+    }
+    // ✅ THIS is your purchase ID
+
 
     /* ======================================================
        5️⃣ INSERT PURCHASE ITEMS
@@ -382,108 +394,163 @@ export const createPurchase = async (req, res) => {
        6️⃣ INVENTORY + STOCK MOVEMENTS
     ====================================================== */
     for (const it of normalizedItems) {
-  const { data: existing } = await supabase
-    .from("inventory")
-    .select("id, quantity, expiry_date, reorder_level, max_stock")
-    .eq("tenant_id", tenant_id)
-    .eq("product_id", it.product_id)
-    .maybeSingle();
+      const { data: existing } = await supabase
+        .from("inventory")
+        .select("id, quantity, stock_value, expiry_date, reorder_level, max_stock")
 
-  if (existing) {
-    await supabase
-      .from("inventory")
-      .update({
-        quantity: Number(existing.quantity || 0) + it.quantity,
-        expiry_date: it.expiry_date ?? existing.expiry_date,
-        reorder_level: it.reorder_level ?? existing.reorder_level,
-        max_stock: it.max_stock ?? existing.max_stock,
-        updated_at: new Date(),
-      })
-      .eq("id", existing.id);
-  } else {
-    await supabase.from("inventory").insert([{
-      tenant_id,
-      product_id: it.product_id,
-      quantity: it.quantity,
-      expiry_date: it.expiry_date,
-      reorder_level: it.reorder_level,
-      max_stock: it.max_stock,
-    }]);
-  }
+        .eq("tenant_id", tenant_id)
+        .eq("product_id", it.product_id)
+        .maybeSingle();
 
-  await supabase.from("stock_movements").insert([{
-    tenant_id,
-    product_id: it.product_id,
-    movement_type: "purchase",
-    reference_table: "purchases",
-    reference_id: purchase_id,
-    quantity: it.quantity,
-  }]);
-}
+      if (existing) {
+        const prevQty = Number(existing.quantity || 0);
+        const prevValue = Number(existing.stock_value || 0);
+
+        const newQty = prevQty + it.quantity;
+        const newStockValue =
+          prevValue + (it.quantity * it.cost_price);
+
+        await supabase
+          .from("inventory")
+          .update({
+            quantity: newQty,
+            stock_value: newStockValue,   // ✅ FIX
+            expiry_date: it.expiry_date ?? existing.expiry_date,
+            reorder_level: it.reorder_level ?? existing.reorder_level,
+            max_stock: it.max_stock ?? existing.max_stock,
+            updated_at: new Date(),
+          })
+          .eq("id", existing.id);
+
+      } else {
+        await supabase.from("inventory").insert([{
+          tenant_id,
+          product_id: it.product_id,
+          quantity: it.quantity,
+          stock_value: it.quantity * it.cost_price, // ✅ FIX
+          expiry_date: it.expiry_date,
+          reorder_level: it.reorder_level,
+          max_stock: it.max_stock,
+        }]);
+
+      }
+
+      await supabase.from("stock_movements").insert([{
+        tenant_id,
+        product_id: it.product_id,
+        movement_type: "purchase",
+        reference_table: "purchases",
+        reference_id: purchase_id,
+        quantity: it.quantity,
+      }]);
+    }
 
 
     /* ======================================================
        7️⃣ ACCOUNTING (JOURNAL-ONLY SYSTEM)
     ====================================================== */
-    const { data: coaAccounts } = await supabase
+    const { data: coaAccounts, error: coaFetchErr } = await supabase
       .from("coa")
-      .select("id, name")
+      .select("id, name, type")
       .eq("tenant_id", tenant_id);
 
-    const getAcc = (name) => {
+    if (coaFetchErr) throw coaFetchErr;
+    if (!coaAccounts || coaAccounts.length === 0) {
+      throw new Error("Chart of Accounts not found for tenant");
+    }
+
+    const getAcc = (name, expectedType = null) => {
       const acc = coaAccounts.find(
         a => a.name.toLowerCase() === name.toLowerCase()
       );
       if (!acc) throw new Error(`COA missing: ${name}`);
+
+      // ⚠️ VALIDATE ACCOUNT TYPE (CRITICAL FOR ACCOUNTING INTEGRITY)
+      if (expectedType && acc.type !== expectedType) {
+        throw new Error(
+          `❌ ACCOUNTING ERROR: "${name}" должен быть "${expectedType}" но найден как "${acc.type}". ` +
+          `Пожалуйста, исправьте таблицу COA.`
+        );
+      }
+
       return acc.id;
     };
 
-    const inventoryAcc = getAcc("Inventory");
-    const vatInputAcc = getAcc("VAT Input");
-    const apAcc = getAcc("Accounts Payable");
-    const cashAcc = getAcc("Cash");
-    const bankAcc = coaAccounts.find(a => a.name.toLowerCase() === "bank")?.id;
+    // ✅ FETCH ACCOUNTS WITH TYPE VALIDATION
+    const inventoryAcc = getAcc("Inventory", "asset");
+    const vatInputAcc = getAcc("VAT Input", "asset");
+    const apAcc = getAcc("Accounts Payable", "liability"); // 🔥 THIS IS CRITICAL
+    const cashAcc = getAcc("Cash", "asset");
 
-    const paymentAcc =
+    const bankAccObj = coaAccounts.find(a => a.name.toLowerCase() === "bank");
+    const bankAcc = bankAccObj?.id;
+
+    if (bankAccObj && bankAccObj.type !== "asset") {
+      throw new Error(`❌ Bank account must be "asset", found "${bankAccObj.type}"`);
+    }
+
+    /* ======================================================
+       DETERMINE CREDIT ACCOUNT BASED ON PAYMENT METHOD
+       - credit = Purchase on credit → Accounts Payable (liability)
+       - cash = Cash purchase → Cash (asset)
+       - upi/card/bank = Bank purchase → Bank (asset)
+    ====================================================== */
+    const creditAccount =
       payment_method === "credit"
         ? apAcc
         : ["upi", "card", "bank"].includes(payment_method)
           ? bankAcc
           : cashAcc;
-          if (!paymentAcc) {
-  throw new Error("Payment account (Cash/Bank/AP) missing in COA");
-}
+
+    if (!creditAccount) {
+      throw new Error("Payment account not found in COA");
+    }
 
     const desc = `Purchase #${invoice_number}`;
 
-    // DAYBOOK
-await supabase.from("daybook").insert([{
-  tenant_id,
-  entry_type: "purchase",
-  description: desc,
-  debit: 0,
-  credit: total_amount,
-  reference_id: purchase_id,
-}]);
+    /* ======================================================
+       DAYBOOK - Human-readable entry
+    ====================================================== */
+    await supabase.from("daybook").insert([{
+      tenant_id,
+      entry_type: "purchase",
+      description: desc,
+      debit: total_amount,   // Total obligation created
+      credit: 0,
+      reference_id: purchase_id,
+    }]);
 
+    /* ======================================================
+       DOUBLE-ENTRY ACCOUNTING:
+       
+       Dr Inventory (asset)          netTotal
+          Cr Cash/Bank/AP                        netTotal
+       
+       Dr VAT Input (asset)          taxTotal
+          Cr Cash/Bank/AP                        taxTotal
+       
+       This creates:
+       - If CREDIT purchase: liability increases (AP credit)
+       - If CASH/BANK purchase: asset decreases (Cash/Bank credit)
+    ====================================================== */
 
-    // INVENTORY
+    // INVENTORY CAPITALIZATION
     await addJournalEntry({
       tenant_id,
-      debit_account: inventoryAcc,
-      credit_account: paymentAcc,
+      debit_account: inventoryAcc,    // Asset increases
+      credit_account: creditAccount,   // Cash/Bank/AP decreases/increases
       amount: netTotal,
       description: `${desc} - Inventory`,
       reference_id: purchase_id,
       reference_type: "purchase",
     });
 
-    // VAT INPUT
+    // VAT INPUT (Recoverable Tax)
     if (taxTotal > 0) {
       await addJournalEntry({
         tenant_id,
-        debit_account: vatInputAcc,
-        credit_account: paymentAcc,
+        debit_account: vatInputAcc,     // Asset increases (VAT recoverable)
+        credit_account: creditAccount,   // Cash/Bank/AP decreases/increases
         amount: taxTotal,
         description: `${desc} - VAT Input`,
         reference_id: purchase_id,
@@ -492,36 +559,23 @@ await supabase.from("daybook").insert([{
     }
 
     /* ======================================================
-       8️⃣ VAT REPORT
+       8️⃣ VAT REPORT UPDATE (ATOMIC - FIXED)
     ====================================================== */
-    const d = new Date(purchase.created_at);
-    const period = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const now = new Date();
+    const period = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
-    const { data: vatRow } = await supabase
-      .from("vat_reports")
-      .select("*")
-      .eq("tenant_id", tenant_id)
-      .eq("period", period)
-      .maybeSingle();
+    // FIXED: Use atomic RPC to prevent race conditions
+    const { error: vatError } = await supabase
+      .rpc('increment_vat_report_purchase', {
+        p_tenant_id: tenant_id,
+        p_period: period,
+        p_purchases: netTotal,
+        p_vat: taxTotal
+      });
 
-    if (vatRow) {
-      await supabase.from("vat_reports").update({
-        total_purchases: Number(vatRow.total_purchases || 0) + netTotal,
-        purchase_vat: Number(vatRow.purchase_vat || 0) + taxTotal,
-        vat_payable:
-          Number(vatRow.sales_vat || 0) -
-          (Number(vatRow.purchase_vat || 0) + taxTotal),
-      }).eq("id", vatRow.id);
-    } else {
-      await supabase.from("vat_reports").insert([{
-        tenant_id,
-        period,
-        total_sales: 0,
-        sales_vat: 0,
-        total_purchases: netTotal,
-        purchase_vat: taxTotal,
-        vat_payable: -taxTotal,
-      }]);
+    if (vatError) {
+      console.error("⚠️ VAT report update failed (non-critical):", vatError);
+      // Don't fail the purchase for VAT report issues
     }
 
     /* ======================================================
@@ -593,7 +647,7 @@ export const updatePurchase = async (req, res) => {
   }
 };
 
-// DELETE /api/purchases/:id - Delete purchase
+// DELETE /api/purchases/:id - Delete purchase (DISABLED FOR ACCOUNTING INTEGRITY)
 export const deletePurchase = async (req, res) => {
   try {
     const tenant_id = req.user?.tenant_id;
@@ -612,31 +666,46 @@ export const deletePurchase = async (req, res) => {
       return res.status(404).json({ error: "Purchase not found" });
     }
 
-    // ⚠️ NOTE: This currently does NOT reverse inventory or accounting.
-    // For testing it's okay; for production you might want a "purchase_cancel" flow instead.
+    // ⚠️ PURCHASE DELETION IS DISABLED FOR ACCOUNTING INTEGRITY
+    // Deleting a purchase would require:
+    // 1. Reversing inventory increases
+    // 2. Reversing all journal entries
+    // 3. Reversing VAT report updates
+    // 4. Reversing stock movements
+    // 
+    // Instead, use a "cancelled" status or purchase return flow
 
-    const { error: deleteItemsError } = await supabase
-      .from("purchase_items")
-      .delete()
-      .eq("purchase_id", id)
-      .eq("tenant_id", tenant_id);
-
-    if (deleteItemsError) throw deleteItemsError;
-
-    const { error: deletePurchaseError } = await supabase
-      .from("purchases")
-      .delete()
-      .eq("id", id)
-      .eq("tenant_id", tenant_id);
-
-    if (deletePurchaseError) throw deletePurchaseError;
-
-    return res.json({
-      success: true,
-      message: `✅ Purchase #${existingPurchase.invoice_number} deleted successfully!`,
+    return res.status(403).json({
+      error: "Purchase deletion is disabled for accounting integrity",
+      message: "To cancel a purchase, please use the purchase return functionality or contact support",
+      purchase_number: existingPurchase.invoice_number,
+      suggestion: "Use purchase returns to reverse transactions properly"
     });
+
+    // ❌ OLD DANGEROUS CODE (COMMENTED OUT)
+    // const { error: deleteItemsError } = await supabase
+    //   .from("purchase_items")
+    //   .delete()
+    //   .eq("purchase_id", id)
+    //   .eq("tenant_id", tenant_id);
+
+    // if (deleteItemsError) throw deleteItemsError;
+
+    // const { error: deletePurchaseError } = await supabase
+    //   .from("purchases")
+    //   .delete()
+    //   .eq("id", id)
+    //   .eq("tenant_id", tenant_id);
+
+    // if (deletePurchaseError) throw deletePurchaseError;
+
+    // return res.json({
+    //   success: true,
+    //   message: `✅ Purchase #${existingPurchase.invoice_number} deleted successfully!`,
+    // });
+
   } catch (err) {
-    console.error("❌ Purchase deletion failed:", err);
+    console.error("❌ Purchase deletion attempt failed:", err);
     return res.status(500).json({ error: err.message || "Server Error" });
   }
 };
@@ -729,28 +798,47 @@ export const payPurchase = async (req, res) => {
     if (payErr) throw payErr;
 
     /* ======================================================
-       3️⃣ COA LOOKUP
+       3️⃣ COA LOOKUP WITH TYPE VALIDATION
     ====================================================== */
     const { data: coaAccounts, error: coaErr } = await supabase
       .from("coa")
-      .select("id, name")
+      .select("id, name, type")
       .eq("tenant_id", tenant_id);
 
     if (coaErr) throw coaErr;
+    if (!coaAccounts || coaAccounts.length === 0) {
+      throw new Error("Chart of Accounts not found for tenant");
+    }
 
-    const getAcc = (name) => {
+    const getAcc = (name, expectedType = null) => {
       const acc = coaAccounts.find(
         a => a.name.toLowerCase() === name.toLowerCase()
       );
       if (!acc) throw new Error(`COA missing: ${name}`);
+
+      // ⚠️ VALIDATE ACCOUNT TYPE
+      if (expectedType && acc.type !== expectedType) {
+        throw new Error(
+          `❌ ACCOUNTING ERROR: "${name}" should be "${expectedType}" but found as "${acc.type}". ` +
+          `Please fix COA table.`
+        );
+      }
+
       return acc.id;
     };
 
-    const apAcc = getAcc("Accounts Payable");
-    const cashAcc = getAcc("Cash");
-    const bankAcc = coaAccounts.find(
+    // ✅ VALIDATE ACCOUNT TYPES
+    const apAcc = getAcc("Accounts Payable", "liability");
+    const cashAcc = getAcc("Cash", "asset");
+
+    const bankAccObj = coaAccounts.find(
       a => a.name.toLowerCase() === "bank"
-    )?.id;
+    );
+    const bankAcc = bankAccObj?.id;
+
+    if (bankAccObj && bankAccObj.type !== "asset") {
+      throw new Error(`❌ Bank account must be "asset", found "${bankAccObj.type}"`);
+    }
 
     /* ======================================================
        4️⃣ DETERMINE PAYMENT ACCOUNT
@@ -767,12 +855,17 @@ export const payPurchase = async (req, res) => {
     const desc = `Payment for Purchase #${id}`;
 
     /* ======================================================
-       5️⃣ JOURNAL ENTRY (AP → CASH / BANK)
+       5️⃣ JOURNAL ENTRY (PAYMENT REVERSES LIABILITY)
+       
+       Dr Accounts Payable (liability)    amount
+          Cr Cash/Bank (asset)                     amount
+       
+       This DECREASES liability and DECREASES cash/bank
     ====================================================== */
     await addJournalEntry({
       tenant_id,
-      debit_account: apAcc,        // AP decreases
-      credit_account: paymentAcc, // Cash / Bank decreases
+      debit_account: apAcc,        // Liability decreases (debit)
+      credit_account: paymentAcc,  // Asset decreases (credit)
       amount,
       description: desc,
       reference_id: id,

@@ -1,0 +1,92 @@
+═══════════════════════════════════════════════════════════════════
+  🚨 ACCOUNT 533 IS STILL BROKEN - FIX IT NOW! 🚨
+═══════════════════════════════════════════════════════════════════
+
+Current Status:
+  Account 533: type = "asset" ❌
+  
+Expected Status:
+  Account 533: type = "liability" ✅
+
+Problem Impact:
+  ❌ Negative asset balances
+  ❌ Broken balance sheet
+  ❌ Incorrect supplier tracking
+  ❌ Failed accounting equation
+
+═══════════════════════════════════════════════════════════════════
+  ⚡ FASTEST FIX (Choose One Method)
+═══════════════════════════════════════════════════════════════════
+
+METHOD 1: Run Node Script (Recommended)
+────────────────────────────────────────
+Open a NEW terminal and run:
+
+  node scripts/fix-account-533.js
+
+This will:
+  ✅ Check current state
+  ✅ Fix account 533
+  ✅ Fix all "Accounts Payable" accounts
+  ✅ Verify the fix
+  ✅ Show summary
+
+────────────────────────────────────────
+
+METHOD 2: Supabase SQL Editor
+────────────────────────────────────────
+1. Open Supabase Dashboard
+2. Go to SQL Editor
+3. Paste this:
+
+UPDATE coa SET type = 'liability' WHERE id = 533;
+
+4. Click "Run"
+
+5. Verify with:
+
+SELECT id, name, type FROM coa WHERE id = 533;
+
+────────────────────────────────────────
+
+METHOD 3: Use the SQL File
+────────────────────────────────────────
+1. Open: FIX_ACCOUNT_533_NOW.sql
+2. Copy the SQL
+3. Paste in Supabase SQL Editor
+4. Run it
+
+═══════════════════════════════════════════════════════════════════
+  📋 AFTER RUNNING THE FIX
+═══════════════════════════════════════════════════════════════════
+
+Test purchase creation:
+
+  POST http://localhost:3001/api/purchases
+  {
+    "supplier_id": 102,
+    "payment_method": "credit",
+    "items": [{
+      "product_id": 116,
+      "quantity": 1,
+      "cost_price": 20
+    }]
+  }
+
+Expected:
+  ✅ Success response
+  ✅ No validation errors
+  ✅ Journal entries created correctly
+
+═══════════════════════════════════════════════════════════════════
+  ⚠️ IMPORTANT
+═══════════════════════════════════════════════════════════════════
+
+This fix ONLY changes the classification, NOT the data!
+
+Your existing transactions will remain unchanged.
+Only the account TYPE changes from "asset" to "liability".
+
+This is SAFE and REQUIRED for accounting integrity.
+
+═══════════════════════════════════════════════════════════════════
